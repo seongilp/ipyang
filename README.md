@@ -21,8 +21,7 @@ npm run dev
 
 ```
 app/
-  page.tsx              랜딩
-  browse/page.tsx       공고 목록
+  page.tsx              공고 목록
   api/animals/          전수 수집 + 마감순 정렬 + 페이지네이션
   api/sido/             시도 목록 (하루 캐시)
   api/photo/            사진 프록시 (아래 참조)
