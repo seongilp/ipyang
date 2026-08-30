@@ -1,5 +1,6 @@
 import { fetchAnimals, MAX_ROWS, type RawAnimal } from './animal-api';
 import { normalizeAnimal, type Animal } from './animal';
+import { kstToday } from './kst';
 
 /**
  * 전체 공고를 한 번만 받아 두고, 필터는 메모리에서 건다.
@@ -21,6 +22,9 @@ const MAX_PAGES = 12;
  * `fetchedAt` 을 같이 들고 다니는 이유: 이게 없으면 "데이터가 실제로 갱신됐는지"를
  * 밖에서 확인할 방법이 없다. 응답 본문을 바이트 단위로 비교하는 수밖에 없었고,
  * 실제로 크론이 캐시만 읽고 있던 결함을 잡는 데 그 때문에 시간을 크게 썼다.
+ *
+ * 값은 업스트림 응답의 `Date` 헤더다(`animal-api.ts`). 수집을 끝낸 시각을 찍으면
+ * Next Data Cache 히트일 때 최대 30분 묵은 데이터를 "방금"이라고 보고하게 된다.
  */
 export interface AnimalSnapshot {
   animals: Animal[];
@@ -48,21 +52,46 @@ let inflight: Promise<AnimalSnapshot> | null = null;
 async function collect(force = false): Promise<AnimalSnapshot> {
   const rows: RawAnimal[] = [];
   let totalCount = 0;
+  // 페이지마다 캐시 히트 여부가 다를 수 있다. 스냅샷의 신선도는 **가장 오래된** 페이지가 정한다.
+  let oldestFetchedAt: string | null = null;
 
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const result = await fetchAnimals({ page, rows: MAX_ROWS }, force);
     totalCount = result.totalCount;
     rows.push(...result.items);
+    if (oldestFetchedAt === null || result.fetchedAt < oldestFetchedAt) {
+      oldestFetchedAt = result.fetchedAt;
+    }
     if (result.items.length < MAX_ROWS || rows.length >= totalCount) break;
   }
 
+  // 한 스냅샷 안의 모든 개체가 같은 '오늘'을 기준으로 daysLeft 를 갖게 한다.
+  // 수집 도중 KST 자정을 넘기면 앞뒤 페이지의 기준일이 갈릴 수 있다.
+  const now = Date.now();
+
   return {
-    animals: rows.map(normalizeAnimal).sort(byDeadline),
-    fetchedAt: new Date().toISOString(),
+    animals: dedupe(rows)
+      .map((raw) => normalizeAnimal(raw, now))
+      .sort(byDeadline),
+    fetchedAt: oldestFetchedAt ?? new Date(now).toISOString(),
   };
 }
 
-/** 마감 임박 순. 기한 미상은 뒤로, 이미 지난 것은 더 뒤로(최근에 끝난 순). */
+/**
+ * 업스트림에 같은 `desertionNo` 가 두 번 오는 경우가 있다(state=notice 2,361건 중 5건 실측).
+ * React key 중복과 "총 N건"의 과대 계수를 만들므로 먼저 온 것만 남긴다.
+ */
+function dedupe(rows: RawAnimal[]): RawAnimal[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (!row.desertionNo) return true;
+    if (seen.has(row.desertionNo)) return false;
+    seen.add(row.desertionNo);
+    return true;
+  });
+}
+
+/** 마감 임박 순 → 이미 지난 것(최근에 끝난 순) → 기한 미상. */
 export function byDeadline(a: Animal, b: Animal): number {
   const left = a.daysLeft;
   const right = b.daysLeft;
@@ -76,7 +105,20 @@ export function byDeadline(a: Animal, b: Animal): number {
 }
 
 export async function getAnimalSnapshot(): Promise<AnimalSnapshot> {
-  if (cached && Date.now() - cached.at < TTL_MS) return cached.snapshot;
+  /*
+   * TTL 뿐 아니라 **KST 날짜가 바뀌었는지**도 본다.
+   *
+   * `daysLeft` 는 수집 시점의 '오늘'을 기준으로 계산돼 스냅샷에 박혀 있다. 자정 직전에
+   * 채운 캐시를 자정 이후에 그대로 내보내면 모든 개체의 남은 날이 하루씩 많게 나온다 —
+   * 방금 고친 그 결함이 30분짜리로 되살아나는 셈이다.
+   *
+   * 한계: 이 라우트의 CDN 캐시(s-maxage=1800)까지는 못 뚫는다. 자정 직후 최대 30분은
+   * 엣지가 어제 계산으로 응답할 수 있다. 그건 이 함수 밖의 문제라 여기서 다루지 않는다.
+   */
+  const now = Date.now();
+  if (cached && now - cached.at < TTL_MS && kstToday(cached.at) === kstToday(now)) {
+    return cached.snapshot;
+  }
   if (inflight) return inflight;
 
   inflight = collect()
@@ -136,9 +178,16 @@ export const SPECIES_BY_CODE: Record<string, string> = {
  * `state=notice` 와 `state=protect` 둘 다 processState 가 '보호중' 으로 온다(실측 300건씩).
  * 실제로 갈리는 축은 **공고 기간**이다 — notice 는 noticeEdt 가 오늘 이후인 것 300/300,
  * protect 는 지난 것 300/300 이었다.
- * 그래서 메모리 필터는 daysLeft 부호로 판정한다.
+ * 그래서 메모리 필터는 daysLeft 부호로 판정한다. **오늘 마감(daysLeft === 0)은 공고중이다** —
+ * 가장 급한 개체라 여기서 밀려나면 기본 화면에서 사라진다.
  */
 export type StateCode = 'notice' | 'protect' | 'return';
+
+const STATE_CODES: readonly string[] = ['notice', 'protect', 'return'];
+
+export function isStateCode(value: string): value is StateCode {
+  return STATE_CODES.includes(value);
+}
 
 function matchesState(animal: Animal, state: string): boolean {
   // processState 가 '종료(반환)' '종료(안락사)' 처럼 괄호가 붙어 온다.

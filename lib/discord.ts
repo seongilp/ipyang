@@ -66,19 +66,25 @@ function animalEmbed(animal: Animal, siteUrl: string) {
   };
 }
 
-/** 어제 이후 새로 올라온 공고. `noticeSdt` 기준. */
-export function pickNewNotices(animals: Animal[], sinceYmd: string): Animal[] {
+/**
+ * 특정 날짜에 **시작된** 공고. `noticeSdt` 기준.
+ *
+ * 범위(`>=`)가 아니라 그 하루만 정확히 고른다. 범위로 잡으면 연속된 두 번의 실행이
+ * 같은 개체를 두 번 보낸다 — 이 앱은 무엇을 보냈는지 기억할 저장소가 없으므로
+ * "하루당 정확히 한 번" 이 성립해야 중복이 없다.
+ */
+export function pickNewNotices(animals: Animal[], startedOnYmd: string): Animal[] {
   return animals
-    .filter((animal) => animal.noticeFrom >= sinceYmd)
+    .filter((animal) => animal.noticeFrom === startedOnYmd)
     .filter((animal) => !animal.state.startsWith('종료'));
 }
 
 export async function sendNewNotices(
   animals: Animal[],
-  sinceYmd: string,
+  startedOnYmd: string,
   siteUrl: string,
 ): Promise<number> {
-  const fresh = pickNewNotices(animals, sinceYmd);
+  const fresh = pickNewNotices(animals, startedOnYmd);
   if (fresh.length === 0) return 0;
 
   // 마감이 임박한 순으로 상위만 보낸다. Discord embed 는 메시지당 10개가 상한이고,
@@ -86,7 +92,7 @@ export async function sendNewNotices(
   const top = fresh.slice(0, MAX_EMBEDS);
 
   await send({
-    content: `**새 공고 ${fresh.length}건**${
+    content: `**${formatYmd(startedOnYmd)} 새 공고 ${fresh.length}건**${
       fresh.length > top.length ? ` (마감 임박 ${top.length}건만 표시)` : ''
     }`,
     embeds: top.map((animal) => animalEmbed(animal, siteUrl)),

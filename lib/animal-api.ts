@@ -71,12 +71,23 @@ async function call<T>(
   params: QueryParams,
   revalidate: number,
   force = false,
-): Promise<{ items: T[]; totalCount: number }> {
+): Promise<{ items: T[]; totalCount: number; fetchedAt: string }> {
   const response = await fetch(buildUrl(endpoint, params), {
     ...(force ? { cache: 'no-store' as const } : { next: { revalidate } }),
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(20_000),
   });
+
+  /**
+   * 업스트림이 준 `Date` 헤더를 실제 수집 시각으로 쓴다.
+   *
+   * 왜: Next Data Cache 히트면 `fetch` 는 저장된 응답을 헤더째 돌려주므로 이 값은
+   * **원래 응답을 받은 시각**이다. 여기서 `new Date()` 를 찍으면 최대 revalidate 창
+   * (30분)만큼 오래된 데이터를 "방금 받았다"고 보고하게 된다. 헤더가 없거나 해석이
+   * 안 되는 경우에만 지금 시각으로 떨어진다.
+   */
+  const headerDate = Date.parse(response.headers.get('date') ?? '');
+  const fetchedAt = new Date(Number.isNaN(headerDate) ? Date.now() : headerDate).toISOString();
 
   const text = await response.text();
   let parsed: StandardResponse<T>;
@@ -104,7 +115,7 @@ async function call<T>(
   const container = raw && typeof raw === 'object' && 'item' in raw ? raw.item : raw;
   const items = Array.isArray(container) ? container : container ? [container as T] : [];
 
-  return { items, totalCount: Number(body?.totalCount) || items.length };
+  return { items, totalCount: Number(body?.totalCount) || items.length, fetchedAt };
 }
 
 /* ------------------------------------------------------------------ */
@@ -143,7 +154,11 @@ export interface AnimalQuery {
   upkind?: string;
   /** 시도 코드 (sido_v2 의 orgCd) */
   uprCd?: string;
-  /** protect=보호중, notice=공고중, return=종료 */
+  /**
+   * 업스트림 상태 코드. 이 앱은 보내지 않는다 — 전수 수집 후 메모리에서 거른다.
+   * 값은 protect(보호중) / notice(공고중) / finish(종료)다. 이 필드의 예전 주석은
+   * 종료를 `return` 이라고 적어 두었는데 업스트림에 없는 값이다.
+   */
   state?: string;
   /** YYYYMMDD */
   bgnde?: string;

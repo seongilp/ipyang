@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { AnimalApiFailure } from '@/lib/animal-api';
-import { filterAnimals, getAnimalSnapshot, SPECIES_BY_CODE } from '@/lib/animal-cache';
+import { filterAnimals, getAnimalSnapshot, isStateCode, SPECIES_BY_CODE } from '@/lib/animal-cache';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -19,13 +19,39 @@ export async function GET(request: Request): Promise<NextResponse> {
   const params = new URL(request.url).searchParams;
   const page = Math.max(1, Number(params.get('page')) || 1);
 
+  /**
+   * 모르는 값은 400 으로 돌려준다.
+   *
+   * 예전에는 조용히 무시했다 — `state=bogus` 는 "notice 가 아니면 protect" 삼항에 걸려
+   * 보호중 목록을, `upkind=999999` 는 코드 매핑이 undefined 라 전체 목록을 돌려줬다.
+   * 둘 다 요청한 적 없는 결과를 200 으로 주는 거라 호출자가 오타를 알아챌 수 없다.
+   */
+  const state = params.get('state');
+  if (state && !isStateCode(state)) {
+    return NextResponse.json(
+      { error: 'INVALID_STATE', message: `state 는 notice/protect/return 중 하나여야 합니다: ${state}` },
+      { status: 400 },
+    );
+  }
+
+  const upkind = params.get('upkind');
+  if (upkind && !Object.hasOwn(SPECIES_BY_CODE, upkind)) {
+    return NextResponse.json(
+      {
+        error: 'INVALID_UPKIND',
+        message: `upkind 는 ${Object.keys(SPECIES_BY_CODE).join('/')} 중 하나여야 합니다: ${upkind}`,
+      },
+      { status: 400 },
+    );
+  }
+
   try {
     const { animals, fetchedAt } = await getAnimalSnapshot();
 
     const filtered = filterAnimals(animals, {
-      species: SPECIES_BY_CODE[params.get('upkind') ?? ''],
+      species: SPECIES_BY_CODE[upkind ?? ''],
       region: params.get('region') ?? undefined,
-      state: params.get('state') ?? undefined,
+      state: state ?? undefined,
       keyword: params.get('q') ?? undefined,
     });
 

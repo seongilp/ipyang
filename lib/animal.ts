@@ -1,4 +1,5 @@
 import type { RawAnimal } from './animal-api';
+import { daysUntilKst } from './kst';
 
 /**
  * 화면이 쓰는 구조동물 모델.
@@ -38,16 +39,6 @@ export interface Animal {
   updatedAt: string;
 }
 
-/** `20260909` → Date (KST 자정 기준). 형식이 다르면 null. */
-function parseYmd(value: string | undefined): Date | null {
-  if (!value || !/^\d{8}$/.test(value)) return null;
-  const year = Number(value.slice(0, 4));
-  const month = Number(value.slice(4, 6));
-  const day = Number(value.slice(6, 8));
-  const date = new Date(Date.UTC(year, month - 1, day) - 9 * 60 * 60 * 1000);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 export function formatYmd(value: string | undefined): string {
   if (!value || !/^\d{8}$/.test(value)) return '—';
   return `${value.slice(0, 4)}.${value.slice(4, 6)}.${value.slice(6, 8)}`;
@@ -61,16 +52,18 @@ export function formatUpdatedAt(value: string | undefined): string {
   return `${formatYmd(digits.slice(0, 8))} ${digits.slice(8, 10)}:${digits.slice(10, 12)}`;
 }
 
-function daysUntil(target: Date | null): number | null {
-  if (!target) return null;
-  const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000);
-  const today = Date.UTC(nowKst.getUTCFullYear(), nowKst.getUTCMonth(), nowKst.getUTCDate());
-  const end = Date.UTC(
-    target.getUTCFullYear(),
-    target.getUTCMonth(),
-    target.getUTCDate(),
-  );
-  return Math.round((end - today) / 86_400_000);
+/**
+ * 카드에 붙일 상태 라벨.
+ *
+ * 원본 `processState` 를 그대로 쓰면 공고중이든 보호중이든 전부 '보호중' 이라고 나온다
+ * (업스트림이 두 상태를 구분해 주지 않는다 — animal-cache.ts 의 matchesState 참고).
+ * 필터는 '공고중' 인데 배지는 '보호중' 이라 한 화면에서 말이 어긋났다.
+ * 목록 필터와 **같은 축**(공고 기간)으로 라벨을 뽑아 둘을 일치시킨다.
+ */
+export function displayState(animal: Pick<Animal, 'state' | 'daysLeft'>): string {
+  if (animal.state.startsWith('종료')) return animal.state;
+  if (animal.daysLeft === null) return animal.state;
+  return animal.daysLeft >= 0 ? '공고중' : '보호중';
 }
 
 const SEX: Record<string, Animal['sex']> = { M: '수컷', F: '암컷' };
@@ -88,8 +81,12 @@ function toProxy(url: string | undefined): string | null {
   return `/api/photo?u=${encodeURIComponent(url)}`;
 }
 
-export function normalizeAnimal(raw: RawAnimal): Animal {
-  const noticeTo = parseYmd(raw.noticeEdt);
+/**
+ * `nowMs` 를 인자로 받는 이유: `daysLeft` 가 시각에 의존하는 유일한 값이라
+ * 이걸 주입할 수 없으면 날짜 경계를 테스트할 방법이 없다. 이 결함이 프로덕션까지
+ * 나간 것도 그래서였다.
+ */
+export function normalizeAnimal(raw: RawAnimal, nowMs: number = Date.now()): Animal {
   const photos = [raw.popfile1, raw.popfile2]
     .map(toProxy)
     .filter((url): url is string => url !== null);
@@ -110,7 +107,7 @@ export function normalizeAnimal(raw: RawAnimal): Animal {
     foundPlace: raw.happenPlace?.trim() || '',
     noticeFrom: raw.noticeSdt ?? '',
     noticeTo: raw.noticeEdt ?? '',
-    daysLeft: daysUntil(noticeTo),
+    daysLeft: daysUntilKst(raw.noticeEdt, nowMs),
     state: raw.processState?.trim() || '미상',
     shelter: {
       name: raw.careNm?.trim() || '',

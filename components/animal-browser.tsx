@@ -1,7 +1,7 @@
 'use client';
 
 import { Info, PawPrint, Search, X } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import { AnimalCard } from '@/components/animal-card';
 import { AnimalDetail } from '@/components/animal-detail';
@@ -30,14 +30,90 @@ interface Filters {
  */
 const INITIAL: Filters = { upkind: '', region: '', state: 'notice', keyword: '' };
 
+const SPECIES_CODES = new Set<string>(SPECIES_OPTIONS.map((option) => option.code));
+const STATE_CODES = new Set<string>(STATE_OPTIONS.map((option) => option.code));
+
+/**
+ * URL → 필터.
+ *
+ * 값을 화이트리스트로 거른다. 주소창은 사용자가 손댈 수 있는 입력이고,
+ * API 가 모르는 upkind/state 에 400 을 주도록 바뀌었으므로 여기서 걸러야
+ * 오타 링크 하나가 화면 전체를 에러로 만들지 않는다.
+ */
+function readUrl(search: string): { filters: Filters; page: number } {
+  const params = new URLSearchParams(search);
+  const upkind = params.get('upkind') ?? '';
+  const state = params.get('state');
+  const page = Number(params.get('page'));
+
+  return {
+    filters: {
+      upkind: SPECIES_CODES.has(upkind) ? upkind : INITIAL.upkind,
+      region: params.get('region') ?? INITIAL.region,
+      // state 가 아예 없으면 기본값(공고중), 빈 문자열이면 사용자가 고른 '전체'다.
+      state: state !== null && STATE_CODES.has(state) ? state : INITIAL.state,
+      keyword: params.get('q') ?? INITIAL.keyword,
+    },
+    page: Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1,
+  };
+}
+
+/**
+ * 주소창을 필터의 단일 출처로 쓴다.
+ *
+ * `popstate` 만 듣는 걸로는 부족하다 — 우리가 부르는 `pushState` 는 이벤트를 안 낸다.
+ * 그래서 구독자를 직접 들고 있다가 push 할 때 같이 깨운다.
+ */
+const urlListeners = new Set<() => void>();
+
+function subscribeUrl(onChange: () => void): () => void {
+  urlListeners.add(onChange);
+  window.addEventListener('popstate', onChange);
+  return () => {
+    urlListeners.delete(onChange);
+    window.removeEventListener('popstate', onChange);
+  };
+}
+
+function pushUrl(next: string, replace = false): void {
+  if (next === `${window.location.pathname}${window.location.search}`) return;
+  // 검색어는 한 글자마다 바뀐다. push 하면 뒤로가기 한 번이 한 글자를 지우는 꼴이 된다.
+  if (replace) window.history.replaceState(null, '', next);
+  else window.history.pushState(null, '', next);
+  for (const listener of urlListeners) listener();
+}
+
+/** 필터 → 쿼리스트링. 기본값은 적지 않아 주소가 짧게 유지된다. */
+function writeUrl(filters: Filters, page: number): string {
+  const params = new URLSearchParams();
+  if (filters.upkind) params.set('upkind', filters.upkind);
+  if (filters.region) params.set('region', filters.region);
+  // '전체'(빈 문자열)도 반드시 적는다. 없으면 기본값 '공고중' 으로 되돌아간다.
+  if (filters.state !== INITIAL.state) params.set('state', filters.state);
+  if (filters.keyword) params.set('q', filters.keyword);
+  if (page > 1) params.set('page', String(page));
+  const query = params.toString();
+  return query ? `${window.location.pathname}?${query}` : window.location.pathname;
+}
+
 export function AnimalBrowser() {
-  const [filters, setFilters] = useState<Filters>(INITIAL);
+  /*
+   * 필터를 useState 에 두면 딥링크·뒤로가기·새로고침에서 전부 날아간다.
+   * 주소창을 출처로 삼아 그 문제를 없앤다. 서버 스냅샷은 빈 문자열이라
+   * SSR 은 기본 필터로 그리고, 하이드레이션 후 실제 주소로 한 번 맞춰진다.
+   */
+  const search = useSyncExternalStore(
+    subscribeUrl,
+    () => window.location.search,
+    () => '',
+  );
+  const { filters, page } = useMemo(() => readUrl(search), [search]);
+
   const [helpOpen, setHelpOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [sido, setSido] = useState<Sido[]>([]);
   const [animals, setAnimals] = useState<Animal[]>([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Animal | null>(null);
@@ -91,7 +167,8 @@ export function AnimalBrowser() {
 
     void load();
     return () => controller.abort();
-  }, [filters, page]);
+    // filters 는 URL 에서 새로 만들어지는 객체라 참조로 비교하면 안 된다. 값으로 건다.
+  }, [filters.upkind, filters.region, filters.state, filters.keyword, page]);
 
   useShortcuts({
     onHelp: () => setHelpOpen(true),
@@ -103,10 +180,22 @@ export function AnimalBrowser() {
     },
   });
 
-  const update = useCallback((patch: Partial<Filters>) => {
-    setFilters((current) => ({ ...current, ...patch }));
-    setPage(1);
-  }, []);
+  // 필터가 바뀌면 1페이지부터 다시 본다. 3페이지에서 축종을 바꾸면 빈 화면이 나온다.
+  const update = useCallback(
+    (patch: Partial<Filters>, replace = false) => {
+      pushUrl(writeUrl({ ...filters, ...patch }, 1), replace);
+    },
+    [filters],
+  );
+
+  // 페이지를 넘기면 목록 맨 위로. 안 그러면 새 목록의 중간부터 보게 된다.
+  const goToPage = useCallback(
+    (next: number) => {
+      pushUrl(writeUrl(filters, next));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [filters],
+  );
 
   // 정렬은 서버가 전수로 한다. 페이지 안에서만 정렬하면 정작 오늘 마감인 개체가
   // 뒷페이지에 묻힌다(실측으로 확인).
@@ -245,7 +334,7 @@ export function AnimalBrowser() {
           <button
             type="button"
             disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            onClick={() => goToPage(Math.max(1, page - 1))}
             className="border-border hover:bg-accent rounded-md border px-3 py-1.5 disabled:opacity-40"
           >
             이전
@@ -256,7 +345,7 @@ export function AnimalBrowser() {
           <button
             type="button"
             disabled={page >= totalPages}
-            onClick={() => setPage((p) => p + 1)}
+            onClick={() => goToPage(page + 1)}
             className="border-border hover:bg-accent rounded-md border px-3 py-1.5 disabled:opacity-40"
           >
             다음
@@ -269,7 +358,7 @@ export function AnimalBrowser() {
       {searchOpen && (
         <SearchDialog
           value={filters.keyword}
-          onChange={(keyword) => update({ keyword })}
+          onChange={(keyword) => update({ keyword }, true)}
           onClose={() => setSearchOpen(false)}
         />
       )}

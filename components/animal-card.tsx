@@ -3,7 +3,7 @@
 import { Phone } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
-import { formatYmd, type Animal } from '@/lib/animal';
+import { displayState, formatYmd, type Animal } from '@/lib/animal';
 import { cn } from '@/lib/utils';
 
 /**
@@ -85,7 +85,7 @@ export function AnimalCard({ animal, onSelect }: { animal: Animal; onSelect: (a:
             </Badge>
           )}
           <Badge variant="outline" className="text-[10px]">
-            {animal.state}
+            {displayState(animal)}
           </Badge>
         </div>
 

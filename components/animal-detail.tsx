@@ -3,7 +3,7 @@
 import { Building2, ExternalLink, MapPin, Phone, X } from 'lucide-react';
 
 import { Separator } from '@/components/ui/separator';
-import { formatUpdatedAt, formatYmd, type Animal } from '@/lib/animal';
+import { displayState, formatUpdatedAt, formatYmd, type Animal } from '@/lib/animal';
 
 /**
  * 상세 패널.
@@ -59,7 +59,7 @@ export function AnimalDetail({ animal, onClose }: { animal: Animal; onClose: () 
         <div className="space-y-4 px-4 py-4">
           <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
             {[
-              ['상태', animal.state],
+              ['상태', displayState(animal)],
               ['중성화', animal.neutered],
               ['체중', animal.weight],
               ['색상', animal.color],
