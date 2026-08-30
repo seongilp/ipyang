@@ -6,22 +6,40 @@ import { Badge } from '@/components/ui/badge';
 import { displayState, formatYmd, type Animal } from '@/lib/animal';
 import { cn } from '@/lib/utils';
 
-/**
- * 남은 날에 따른 강조.
+/*
+ * 배지 색은 **불투명**이어야 한다.
+ *
+ * 배지는 업스트림 사진 위에 얹힌다. 사진 밝기를 통제할 수 없는데 반투명 배경을 쓰면
+ * 최종 색이 사진에 따라 달라진다. 실제로 bg-red-500/15 + text-red-400 조합은
+ * 검은 사진 위에서 6.5:1 이지만 흰 사진 위에서는 2.3:1 까지 무너져 안 읽혔다.
+ * 흰 사진과 검은 사진 양쪽을 동시에 만족하는 투명도 값은 존재하지 않으므로,
+ * 배경을 불투명으로 못박아 사진과 무관하게 대비를 고정한다.
+ *
+ * 각 단계는 흰/검은 사진 어느 쪽에서도 동일하게 아래 대비를 낸다(WCAG AA 4.5:1 기준).
+ *   임박 red-700 + white        6.42:1
+ *   주의 amber-400 + amber-950  8.73:1
+ *   평상 neutral-900 + neutral-100 16.42:1
  *
  * 공고 종료는 안락사 가능 시점과 연결된다. 그렇다고 모든 카드를 빨갛게 칠하면
  * 사용자가 이내 무시하게 되므로, 정말 임박한 것만 올린다.
  */
+const TONE = {
+  /** 평상. neutral-900 은 카드 표면과 같은 색이라 사진 위에서도 튀지 않는다. */
+  calm: 'bg-neutral-900 text-neutral-100',
+  warn: 'bg-amber-400 text-amber-950',
+  urgent: 'bg-red-700 text-white',
+} as const;
+
 function deadlineTone(daysLeft: number | null): {
   label: string;
   className: string;
 } {
-  if (daysLeft === null) return { label: '기한 미상', className: 'bg-muted text-muted-foreground' };
-  if (daysLeft < 0) return { label: '공고 종료', className: 'bg-muted text-muted-foreground' };
-  if (daysLeft === 0) return { label: '오늘 마감', className: 'bg-red-500/15 text-red-400' };
-  if (daysLeft <= 3) return { label: `${daysLeft}일 남음`, className: 'bg-red-500/15 text-red-400' };
-  if (daysLeft <= 7) return { label: `${daysLeft}일 남음`, className: 'bg-amber-500/15 text-amber-400' };
-  return { label: `${daysLeft}일 남음`, className: 'bg-muted text-muted-foreground' };
+  if (daysLeft === null) return { label: '기한 미상', className: TONE.calm };
+  if (daysLeft < 0) return { label: '공고 종료', className: TONE.calm };
+  if (daysLeft === 0) return { label: '오늘 마감', className: TONE.urgent };
+  if (daysLeft <= 3) return { label: `${daysLeft}일 남음`, className: TONE.urgent };
+  if (daysLeft <= 7) return { label: `${daysLeft}일 남음`, className: TONE.warn };
+  return { label: `${daysLeft}일 남음`, className: TONE.calm };
 }
 
 export function AnimalCard({ animal, onSelect }: { animal: Animal; onSelect: (a: Animal) => void }) {
@@ -58,7 +76,12 @@ export function AnimalCard({ animal, onSelect }: { animal: Animal; onSelect: (a:
         )}
         <span
           className={cn(
-            'absolute top-2 left-2 rounded-full px-2 py-0.5 text-[11px] font-medium backdrop-blur',
+            /*
+             * backdrop-blur 를 뺐다. 배경이 불투명해져 뒤가 비치지 않으므로 아무 효과가 없고,
+             * 카드마다 합성 레이어만 하나씩 늘린다.
+             * ring 은 어두운 사진 위에서 평상 배지(거의 검정)의 윤곽이 사라지지 않게 하는 장식이다.
+             */
+            'absolute top-2 left-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-white/15',
             tone.className,
           )}
         >
