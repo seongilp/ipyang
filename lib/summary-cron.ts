@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { assertCron, siteUrl } from './cron-auth';
+import { assertCron, cronTrigger, describeTrigger, siteUrl } from './cron-auth';
 import { getAnimalSnapshotFresh } from './animal-cache';
 import { hasWebhook, sendSummary } from './discord';
 
@@ -26,13 +26,17 @@ export async function runSummaryCron(request: Request): Promise<Response> {
 
   // 발송 직전 강제 수집. 요약은 "지금 몇 마리가 공고 중인가"라 캐시로 보내면 의미가 없다.
   const started = Date.now();
+  const trigger = cronTrigger(request);
   const { animals, fetchedAt } = await getAnimalSnapshotFresh();
-  await sendSummary(animals, siteUrl());
+  await sendSummary(animals, siteUrl(), describeTrigger(trigger));
 
   return NextResponse.json({
     ok: true,
     total: animals.length,
     fetchedAt,
+    // 자동 발화 여부를 응답에도 실어 둔다. 수동 호출로 이 라우트를 확인할 때
+    // 응답만 보고도 "지금 이건 수동이다"를 헷갈리지 않게 하려는 목적이다.
+    trigger,
     elapsedMs: Date.now() - started,
   });
 }

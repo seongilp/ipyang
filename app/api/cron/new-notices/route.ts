@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { assertCron, siteUrl } from '@/lib/cron-auth';
+import { assertCron, cronTrigger, describeTrigger, siteUrl } from '@/lib/cron-auth';
 import { getAnimalSnapshotFresh } from '@/lib/animal-cache';
 import { dayToYmd, kstToday } from '@/lib/kst';
 import { hasWebhook, sendNewNotices } from '@/lib/discord';
@@ -37,15 +37,17 @@ export async function GET(request: Request): Promise<Response> {
   // 발송 직전 강제 수집. 하루에 한 번뿐인 발송이라 캐시된(최대 30분 묵은) 목록이면
   // 그 사이 들어온 공고를 통째로 빠뜨린다 — 이 라우트에선 되돌릴 기회가 없다.
   const started = Date.now();
+  const trigger = cronTrigger(request);
   const { animals, fetchedAt } = await getAnimalSnapshotFresh();
   const targetYmd = dayToYmd(kstToday() - 1);
-  const sent = await sendNewNotices(animals, targetYmd, siteUrl());
+  const sent = await sendNewNotices(animals, targetYmd, siteUrl(), describeTrigger(trigger));
 
   return NextResponse.json({
     ok: true,
     noticeSdt: targetYmd,
     newCount: sent,
     fetchedAt,
+    trigger,
     elapsedMs: Date.now() - started,
   });
 }

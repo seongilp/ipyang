@@ -83,6 +83,7 @@ export async function sendNewNotices(
   animals: Animal[],
   startedOnYmd: string,
   siteUrl: string,
+  origin?: string,
 ): Promise<number> {
   const fresh = pickNewNotices(animals, startedOnYmd);
   if (fresh.length === 0) return 0;
@@ -94,14 +95,25 @@ export async function sendNewNotices(
   await send({
     content: `**${formatYmd(startedOnYmd)} 새 공고 ${fresh.length}건**${
       fresh.length > top.length ? ` (마감 임박 ${top.length}건만 표시)` : ''
-    }`,
+    }${origin ? ` · ${origin}` : ''}`,
     embeds: top.map((animal) => animalEmbed(animal, siteUrl)),
   });
 
   return fresh.length;
 }
 
-export async function sendSummary(animals: Animal[], siteUrl: string): Promise<void> {
+/**
+ * 현황 요약 발송.
+ *
+ * `origin` 은 이 발송이 크론 자동 발화인지 수동 호출인지를 나타낸다. 푸터에 남기는
+ * 이유는 Hobby 런타임 로그가 1시간 만에 사라져서, 나중에 "이 시각에 크론이 정말
+ * 돌았는가"를 확인할 수단이 메시지밖에 남지 않기 때문이다.
+ */
+export async function sendSummary(
+  animals: Animal[],
+  siteUrl: string,
+  origin?: string,
+): Promise<void> {
   const active = animals.filter(
     (a) => !a.state.startsWith('종료') && a.daysLeft !== null && a.daysLeft >= 0,
   );
@@ -131,7 +143,9 @@ export async function sendSummary(animals: Animal[], siteUrl: string): Promise<v
           { name: '3일 이내', value: `${soon.length.toLocaleString()}마리`, inline: true },
           { name: '축종', value: speciesLine, inline: false },
         ],
-        footer: { text: '국가동물보호정보시스템 공공데이터' },
+        footer: {
+          text: ['국가동물보호정보시스템 공공데이터', origin].filter(Boolean).join(' · '),
+        },
         timestamp: new Date().toISOString(),
       },
     ],
