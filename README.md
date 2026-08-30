@@ -1,36 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 입양 — 전국 유기동물 공고
 
-## Getting Started
+전국 동물보호센터의 구조동물 공고를 **마감이 임박한 순서로** 보여준다.
+공공데이터포털 국가동물보호정보시스템 기반.
 
-First, run the development server:
+## 왜 마감 순인가
+
+공고 기간이 끝나면 보호소 여건에 따라 다음 절차로 넘어간다.
+그런데 원본 API 는 **최신 공고순**으로만 준다 — 실측해 보니 오늘 마감인 개체가 20페이지에 묻혀 있었다.
+그래서 서버가 조건에 맞는 공고를 **전부 받아 남은 날짜로 정렬**한 뒤 페이지를 잘라 준다.
+
+## 실행
 
 ```bash
+npm install
+cp .env.example .env.local   # DATA_GO_KR_KEY 채우기
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 구조
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```
+app/
+  page.tsx              랜딩
+  browse/page.tsx       공고 목록
+  api/animals/          전수 수집 + 마감순 정렬 + 페이지네이션
+  api/sido/             시도 목록 (하루 캐시)
+  api/photo/            사진 프록시 (아래 참조)
+components/
+  animal-browser.tsx    목록·필터
+  animal-card.tsx       카드
+  animal-detail.tsx     상세 + 보호소 연결
+lib/
+  animal-api.ts         data.go.kr 클라이언트 (서버 전용)
+  animal.ts             정규화, 남은 날짜 계산
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 사진 프록시가 필요한 이유
 
-## Learn More
+원본 사진 URL 이 `http://openapi.animal.go.kr/...` 다. 문제가 세 개 겹친다.
 
-To learn more about Next.js, take a look at the following resources:
+1. **mixed content** — https 페이지에서 http 이미지는 브라우저가 차단한다.
+2. **content-type 이 `application/octet-stream`** — 그대로는 이미지로 안 읽힌다.
+3. 정부 서버 직접 핫링크 — 카드 그리드는 스크롤당 수십 장이다.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`app/api/photo` 가 서버에서 받아 content-type 을 바로잡고 한 달짜리 `s-maxage` 로 CDN 에 맡긴다.
+호스트는 `openapi.animal.go.kr` 만 허용한다(열린 프록시 방지).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`next/image` 를 쓰지 않은 것은 의도적이다. 원본이 1000×750·250KB 라 리사이즈가 이상적이지만
+Vercel 이미지 변환은 플랜 할당량을 쓰고, 공고는 매일 수천 건이 바뀌어 캐시 적중률이 낮다.
+할당량을 넘기면 이미지가 통째로 안 나온다.
 
-## Deploy on Vercel
+## 알아야 할 것 (실측으로 확인)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- **`state=protect`(보호중)는 공고가 이미 끝난 개체다.** 60건 전부 남은 날짜가 -3 ~ -12 였다.
+  기본 화면을 `notice`(공고중)로 둔 이유다.
+- 축종 코드: 개 `417000` / 고양이 `422400` / 기타 `429900`. API 가 목록을 안 줘서 상수로 둔다.
+- 상위코드 없이 `sigungu`/`shelter` 를 부르면 **에러 없이 0건**이 온다.
+- 보호소 좌표는 별도 API(`15098915`)에 있고 `careRegNo` 로 조인된다. 좌표 보유율 99.7%(335곳 중 334).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 이 앱이 하지 않는 것
+
+- **입양 문의를 대신 받지 않는다.** 절차·가능 여부·현재 상태를 아는 곳은 보호소뿐이라
+  각 공고의 `careTel` 로 직접 연결한다.
+- 갱신 시각을 숨기지 않는다. 지자체 입력과 실제 상황 사이에 시차가 있어서,
+  각 상세에 "정보 기준" 시각을 표시한다.
+
+## 출처
+
+농림축산식품부 농림축산검역본부 — 공공데이터포털
+[구조동물 조회 서비스](https://www.data.go.kr/data/15098931/openapi.do) ·
+[동물보호센터 정보 조회서비스](https://www.data.go.kr/data/15098915/openapi.do)
