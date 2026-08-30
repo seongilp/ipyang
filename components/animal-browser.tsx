@@ -9,6 +9,7 @@ import { HelpDialog, SearchDialog, useShortcuts } from '@/components/shortcuts';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SPECIES_OPTIONS, STATE_OPTIONS, type Animal } from '@/lib/animal';
+import { takeAnimalsPreload } from '@/lib/animals-preload';
 import { cn } from '@/lib/utils';
 
 interface Sido {
@@ -96,6 +97,21 @@ function writeUrl(filters: Filters, page: number): string {
   return query ? `${window.location.pathname}?${query}` : window.location.pathname;
 }
 
+interface AnimalsPage {
+  totalCount: number;
+  animals: Animal[];
+}
+
+/** 라우트가 400/502 에 실어 보내는 형태. 정상 응답에는 `error` 가 없다. */
+function isApiError(body: unknown): body is { error: string; message?: string } {
+  return typeof body === 'object' && body !== null && 'error' in body;
+}
+
+async function fetchAnimalsPage(url: string, signal: AbortSignal): Promise<unknown> {
+  const response = await fetch(url, { signal });
+  return response.json();
+}
+
 export function AnimalBrowser() {
   /*
    * 필터를 useState 에 두면 딥링크·뒤로가기·새로고침에서 전부 날아간다.
@@ -150,12 +166,19 @@ export function AnimalBrowser() {
         if (filters.state) query.set('state', filters.state);
         if (filters.keyword) query.set('q', filters.keyword);
 
-        const response = await fetch(`/api/animals?${query}`, { signal: controller.signal });
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.message ?? '조회 실패');
+        const url = `/api/animals?${query}`;
+
+        /*
+         * layout 이 HTML 파싱 시점에 띄워 둔 요청이 있으면 그걸 쓴다. 하이드레이션을
+         * 기다리는 동안 응답이 이미 날아와 있으므로 스켈레톤이 그만큼 짧아진다.
+         * 없거나(필터가 걸린 진입) 실패했으면(null) 평소대로 직접 받는다.
+         */
+        const body = (await takeAnimalsPreload(url)) ?? (await fetchAnimalsPage(url, controller.signal));
         if (controller.signal.aborted) return;
-        setAnimals(body.animals as Animal[]);
-        setTotalCount(body.totalCount as number);
+        if (isApiError(body)) throw new Error(body.message ?? '조회 실패');
+        const result = body as AnimalsPage;
+        setAnimals(result.animals);
+        setTotalCount(result.totalCount);
       } catch (cause) {
         if (!controller.signal.aborted) {
           setError(cause instanceof Error ? cause.message : '조회 실패');

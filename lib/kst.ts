@@ -57,6 +57,20 @@ export function todayYmdKst(nowMs: number = Date.now()): string {
 }
 
 /**
+ * 다음 KST 자정까지 남은 밀리초. 자정 정각이면 꼬박 하루(86,400,000).
+ *
+ * 왜 여기 있나: 캐시 수명을 정할 때 쓴다. `daysLeft` 는 수집 시점의 KST '오늘'을
+ * 기준으로 계산돼 응답에 박혀 있으므로, **자정을 넘겨 재사용된 캐시는 전부 하루씩
+ * 틀린다**. 캐시 수명을 이 값으로 잘라 두면 그 일이 구조적으로 불가능해진다.
+ *
+ * 이 파일에 두는 이유는 KST 오프셋을 두 군데서 계산하지 않기 위해서다 — 기준이
+ * 갈렸다가 하루 밀림 결함이 났던 게 이 파일이 존재하는 이유 그 자체다.
+ */
+export function msUntilKstMidnight(nowMs: number = Date.now()): number {
+  return (kstToday(nowMs) + 1) * DAY_MS - KST_OFFSET_MS - nowMs;
+}
+
+/**
  * 공고 종료일까지 남은 일수. 오늘 마감이면 0, 어제 마감이면 -1.
  *
  * 둘 다 KST 달력 날짜의 에폭 일수라 뺄셈만으로 끝난다.

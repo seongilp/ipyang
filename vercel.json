@@ -1,4 +1,5 @@
 {
+  "regions": ["icn1"],
   "crons": [
     { "path": "/api/cron/new-notices", "schedule": "30 22 * * *" },
     { "path": "/api/cron/summary-morning", "schedule": "0 0 * * *" },

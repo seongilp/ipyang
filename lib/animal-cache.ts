@@ -49,20 +49,55 @@ const TTL_MS = 30 * 60 * 1000;
 /** 진행 중인 수집. 동시에 여러 요청이 들어와도 업스트림은 한 번만 친다. */
 let inflight: Promise<AnimalSnapshot> | null = null;
 
-async function collect(force = false): Promise<AnimalSnapshot> {
-  const rows: RawAnimal[] = [];
-  let totalCount = 0;
-  // 페이지마다 캐시 히트 여부가 다를 수 있다. 스냅샷의 신선도는 **가장 오래된** 페이지가 정한다.
-  let oldestFetchedAt: string | null = null;
+/**
+ * 업스트림에 동시에 띄우는 페이지 수.
+ *
+ * 6이면 현재 데이터(6,582건 = 7페이지)에서 2페이지부터 끝까지가 **한 묶음**에 들어간다.
+ * 그래서 전수 수집의 직렬 왕복이 7번에서 2번(1페이지 → 나머지)으로 줄어든다.
+ *
+ * 왜 더 올리지 않나: 왕복이 이미 2번이라 그 이상은 얻는 게 없고, 정부 API 에 한 번에
+ * 던지는 동시 요청만 늘어난다. 왜 더 내리지 않나: 4로 재 봤을 때 묶음이 2개가 되어
+ * 느린 구간에서 손해였다(실측 c=4 10.2~15.8s vs c=7 2.4~9.2s — 다만 업스트림 편차가
+ * 워낙 커서 둘의 차이보다 같은 설정의 회차 간 차이가 더 컸다).
+ * 메모리는 c=7 에서 RSS 148MB 로 문제되지 않았다.
+ *
+ * data.go.kr 호출 **횟수**는 순차와 동일하다. 일 10,000 쿼터에는 영향이 없다.
+ */
+const COLLECT_CONCURRENCY = 6;
 
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const result = await fetchAnimals({ page, rows: MAX_ROWS }, force);
-    totalCount = result.totalCount;
-    rows.push(...result.items);
-    if (oldestFetchedAt === null || result.fetchedAt < oldestFetchedAt) {
-      oldestFetchedAt = result.fetchedAt;
+/**
+ * 전수 수집. 1페이지로 총 건수를 먼저 알아낸 뒤 나머지를 묶음 병렬로 받는다.
+ *
+ * 왜 바꿨나: 예전에는 7페이지를 **순차**로 받아 콜드 요청 하나가 6.95초를 기다렸다.
+ * 한 페이지가 1~2.3초(한국에서 실측)라 그 시간의 거의 전부가 대기다 — 연산이 아니다.
+ * 첫 응답의 `totalCount` 로 필요한 페이지 수가 정해지므로, 2페이지부터는 서로를
+ * 기다릴 이유가 없다.
+ *
+ * 순차의 유일한 장점이던 "조기 종료"(`items.length < MAX_ROWS` 면 그만)는 totalCount 로
+ * 페이지 수를 먼저 계산해 대신한다. 결과적으로 요청 수는 예전과 같거나 적다.
+ */
+async function collect(force = false): Promise<AnimalSnapshot> {
+  const first = await fetchAnimals({ page: 1, rows: MAX_ROWS }, force);
+  const totalCount = first.totalCount;
+  const rows: RawAnimal[] = [...first.items];
+  // 페이지마다 캐시 히트 여부가 다를 수 있다. 스냅샷의 신선도는 **가장 오래된** 페이지가 정한다.
+  let oldestFetchedAt: string | null = first.fetchedAt;
+
+  // 1페이지가 덜 찼으면 그게 전부다. 총 건수를 못 믿을 때도 MAX_PAGES 에서 멈춘다.
+  const lastPage =
+    first.items.length < MAX_ROWS ? 1 : Math.min(MAX_PAGES, Math.ceil(totalCount / MAX_ROWS));
+
+  for (let page = 2; page <= lastPage; page += COLLECT_CONCURRENCY) {
+    const batch = [];
+    for (let offset = 0; offset < COLLECT_CONCURRENCY && page + offset <= lastPage; offset += 1) {
+      batch.push(fetchAnimals({ page: page + offset, rows: MAX_ROWS }, force));
     }
-    if (result.items.length < MAX_ROWS || rows.length >= totalCount) break;
+
+    // 한 페이지라도 실패하면 목록에 구멍이 난 채로 30분간 캐시된다. 통째로 실패시킨다.
+    for (const result of await Promise.all(batch)) {
+      rows.push(...result.items);
+      if (result.fetchedAt < oldestFetchedAt) oldestFetchedAt = result.fetchedAt;
+    }
   }
 
   // 한 스냅샷 안의 모든 개체가 같은 '오늘'을 기준으로 daysLeft 를 갖게 한다.
@@ -73,7 +108,7 @@ async function collect(force = false): Promise<AnimalSnapshot> {
     animals: dedupe(rows)
       .map((raw) => normalizeAnimal(raw, now))
       .sort(byDeadline),
-    fetchedAt: oldestFetchedAt ?? new Date(now).toISOString(),
+    fetchedAt: oldestFetchedAt,
   };
 }
 
@@ -112,8 +147,9 @@ export async function getAnimalSnapshot(): Promise<AnimalSnapshot> {
    * 채운 캐시를 자정 이후에 그대로 내보내면 모든 개체의 남은 날이 하루씩 많게 나온다 —
    * 방금 고친 그 결함이 30분짜리로 되살아나는 셈이다.
    *
-   * 한계: 이 라우트의 CDN 캐시(s-maxage=1800)까지는 못 뚫는다. 자정 직후 최대 30분은
-   * 엣지가 어제 계산으로 응답할 수 있다. 그건 이 함수 밖의 문제라 여기서 다루지 않는다.
+   * 예전에는 여기까지만 막을 수 있었고 CDN 캐시가 자정 직후 어제 계산을 계속 내보냈다.
+   * 지금은 라우트가 CDN 수명을 KST 자정에 맞춰 자르므로(`app/api/animals/route.ts` 의
+   * `cacheControl`) 두 겹이 같은 경계를 쓴다.
    */
   const now = Date.now();
   if (cached && now - cached.at < TTL_MS && kstToday(cached.at) === kstToday(now)) {

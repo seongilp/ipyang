@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import { Noto_Sans_KR } from 'next/font/google';
 
+import { ANIMALS_PRELOAD_URL } from '@/lib/animals-preload';
+
 import './globals.css';
 
 const notoSansKr = Noto_Sans_KR({
@@ -19,6 +21,37 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
     <html lang="ko" className={`dark ${notoSansKr.variable} antialiased`} suppressHydrationWarning>
+      <head>
+        {/*
+         * 목록 요청을 HTML 파싱 시점에 띄운다. 이 앱에서 가장 큰 체감 지연이 여기 있었다.
+         *
+         * 문제: 목록은 클라이언트 컴포넌트의 effect 에서 받는데, 그 effect 는 JS 157KB(압축)를
+         * 내려받아 파싱하고 하이드레이션이 끝나야 비로소 돈다. 유선에서도 요청 **시작**이
+         * t=110ms 였고(실측), 대역폭이 좁은 모바일에서는 이 구간이 훨씬 길어진다.
+         * 사용자가 본 "셸은 떴는데 스켈레톤만" 이 정확히 이 구간이다 — 서버가 느린 게 아니라
+         * 요청이 아직 시작도 안 한 상태다.
+         *
+         * `<link rel="preload" as="fetch">` 를 먼저 시도했다가 버렸다. Chrome 이 동일 출처
+         * as=fetch preload 를 fetch() 와 매칭하지 못해 "credentials mode does not match" 경고를
+         * 계속 냈고(crossorigin 유무, credentials/mode 를 omit·cors 로 맞춘 조합까지 전부 실측),
+         * 실제 재사용은 preload 캐시가 아니라 브라우저 HTTP 캐시의 휴리스틱에 기대고 있었다.
+         * `rel="prefetch"` 는 경고가 없는 대신 우선순위가 Lowest 라, 폰트·JS 와 대역폭을
+         * 다투는 바로 그 모바일 상황에서 밀릴 수 있다.
+         *
+         * 그래서 요청을 그냥 여기서 **직접** 시작하고 그 Promise 를 넘긴다. 캐시 매칭에 기대지
+         * 않으므로 재사용이 확정적이고, 일반 fetch 라 우선순위도 높고, 경고도 없다.
+         *
+         * 기본 화면(공고중·1페이지)만 건다. 필터가 걸린 주소로 들어오면 이 응답은 버려지는데,
+         * brotli 로 8.4KB 인 데다 CDN 히트라 손해가 작다. 반대로 기본 화면은 압도적 다수다.
+         * 실패는 여기서 삼키고 null 로 떨어뜨린다 — 처리기 없는 rejection 이 콘솔을 더럽히고,
+         * 어차피 컴포넌트가 평소 경로로 다시 받으면 된다.
+         */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){var u=${JSON.stringify(ANIMALS_PRELOAD_URL)};window.__animalsPreload={url:u,promise:fetch(u).then(function(r){return r.ok?r.json():null}).catch(function(){return null})}})()`,
+          }}
+        />
+      </head>
       <body className="bg-background text-foreground min-h-dvh">{children}</body>
     </html>
   );

@@ -2,11 +2,43 @@ import { NextResponse } from 'next/server';
 
 import { AnimalApiFailure } from '@/lib/animal-api';
 import { filterAnimals, getAnimalSnapshot, isStateCode, SPECIES_BY_CODE } from '@/lib/animal-cache';
+import { msUntilKstMidnight } from '@/lib/kst';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 const PAGE_SIZE = 60;
+
+/** 신선한 것으로 취급할 최대 시간. 공고는 하루 단위로 바뀌므로 30분이면 충분하다. */
+const FRESH_S = 1_800;
+
+/**
+ * CDN 수명을 **KST 자정에 맞춰 자른다.**
+ *
+ * 왜 자르나: `daysLeft` 는 수집 시점의 KST '오늘'을 기준으로 계산돼 이 응답에 박혀 있다.
+ * 자정을 넘겨 재사용된 항목은 모든 개체가 하루씩 많게 나온다 — 얼마 전에 고친 하루 밀림
+ * 결함이 캐시를 통해 되살아나는 셈이다. 예전 값(`s-maxage=1800, swr=7200`)은 자정 이후
+ * **최대 2.5시간** 그 상태가 될 수 있었다. 자정에 하드 만료시키면 그 창이 0이 된다.
+ *
+ * 자르고 나니 오히려 `stale-while-revalidate` 를 **남은 하루치만큼 길게** 줄 수 있다.
+ * 자정을 못 넘기는 것이 보장되므로 늘려도 하루 밀림이 안 생긴다. swr 구간에서 CDN 은
+ * 옛 응답을 **즉시** 주고 뒤에서 갱신하므로, 사용자가 전수 수집(느릴 때 20초 이상)을
+ * 기다리는 일이 낮 시간대에는 사실상 사라진다.
+ *
+ * 대가: 트래픽이 아주 뜸하면 그날 안에서 최대 반나절 묵은 목록을 볼 수 있다(새 공고가
+ * 늦게 뜬다). 다만 stale 을 한 번 주는 순간 뒤에서 갱신이 걸리므로 방문이 조금이라도
+ * 있으면 30분 신선도로 수렴한다. 그리고 상세에 `fetchedAt` 을 그대로 노출하므로
+ * 사용자에게 묵은 데이터를 신선한 척 보여주지는 않는다.
+ *
+ * 남는 비용: 자정 직후 첫 요청 한 건은 전수 수집을 기다린다. KST 자정은 이 앱에서
+ * 트래픽이 가장 적은 시간대라 하루 한 명이 감당하는 값으로 받아들인다.
+ */
+function cacheControl(nowMs: number = Date.now()): string {
+  const untilMidnight = Math.max(0, Math.floor(msUntilKstMidnight(nowMs) / 1000));
+  const maxAge = Math.min(FRESH_S, untilMidnight);
+  const staleWhileRevalidate = untilMidnight - maxAge;
+  return `public, s-maxage=${maxAge}, stale-while-revalidate=${staleWhileRevalidate}`;
+}
 
 /**
  * 전체를 한 번 받아 두고 필터는 메모리에서 건다.
@@ -65,7 +97,7 @@ export async function GET(request: Request): Promise<NextResponse> {
         fetchedAt,
         animals: filtered.slice(start, start + PAGE_SIZE),
       },
-      { headers: { 'Cache-Control': 'public, s-maxage=1800, stale-while-revalidate=7200' } },
+      { headers: { 'Cache-Control': cacheControl() } },
     );
   } catch (error) {
     if (error instanceof AnimalApiFailure) {

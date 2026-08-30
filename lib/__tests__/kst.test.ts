@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { dayToYmd, daysUntilKst, kstToday, todayYmdKst, ymdToDay } from '../kst';
+import { dayToYmd, daysUntilKst, kstToday, msUntilKstMidnight, todayYmdKst, ymdToDay } from '../kst';
 
 /** KST 로 그 날짜 09:00 에 해당하는 UTC 밀리초. (KST 정오 언저리 = 안전한 한낮) */
 function kstNoon(ymd: string): number {
@@ -76,6 +76,38 @@ describe('KST 자정 경계', () => {
     assert.equal(todayYmdKst(Date.UTC(2026, 7, 30, 0, 0, 0)), '20260830');
     // UTC 2026-08-30 23:00 = KST 2026-08-31 08:00.
     assert.equal(todayYmdKst(Date.UTC(2026, 7, 30, 23, 0, 0)), '20260831');
+  });
+});
+
+describe('msUntilKstMidnight', () => {
+  // 캐시 수명이 이 값으로 잘린다. 여기가 어긋나면 자정을 넘긴 캐시가 daysLeft 를 하루 밀어 준다.
+  const midnight = Date.UTC(2026, 7, 30, 15, 0, 0); // 2026-08-31 00:00 KST
+
+  it('자정 정각이면 꼬박 하루', () => {
+    assert.equal(msUntilKstMidnight(midnight), 86_400_000);
+  });
+
+  it('자정 1ms 전이면 1ms', () => {
+    assert.equal(msUntilKstMidnight(midnight - 1), 1);
+  });
+
+  it('KST 정오면 12시간', () => {
+    assert.equal(msUntilKstMidnight(kstNoon('20260830')), 12 * 3_600_000);
+  });
+
+  it('항상 0 초과 하루 이하다', () => {
+    // 하루를 15분 간격으로 훑어 경계 밖으로 새는 지점이 없는지 본다.
+    for (let ms = midnight - 86_400_000; ms < midnight + 86_400_000; ms += 900_000) {
+      const left = msUntilKstMidnight(ms);
+      assert.ok(left > 0 && left <= 86_400_000, `${new Date(ms).toISOString()} → ${left}`);
+    }
+  });
+
+  it('남은 시간을 더하면 그날이 끝나 있다', () => {
+    for (const ms of [midnight - 1, midnight, kstNoon('20260830'), kstNoon('20260101')]) {
+      assert.equal(kstToday(ms + msUntilKstMidnight(ms)), kstToday(ms) + 1);
+      assert.equal(kstToday(ms + msUntilKstMidnight(ms) - 1), kstToday(ms));
+    }
   });
 });
 
