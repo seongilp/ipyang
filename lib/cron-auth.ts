@@ -21,9 +21,19 @@ export function assertCron(request: Request): Response | null {
   return null;
 }
 
-/** 절대 URL. Discord 가 썸네일을 가져가려면 상대경로로는 안 된다. */
+/**
+ * 절대 URL. Discord 가 썸네일을 가져가려면 상대경로로는 안 된다.
+ *
+ * `NEXT_PUBLIC_` 접두사를 쓰지 않는다. 이 값은 크론 라우트(서버)에서만 쓰는데
+ * 접두사를 붙이면 클라이언트 번들에 그대로 박히고, Vercel 도 그 접두사에는
+ * sensitive 설정을 거부한다.
+ *
+ * 폴백인 `VERCEL_PROJECT_PRODUCTION_URL` 은 Vercel 이 자동 배정한 프로덕션
+ * 도메인이라 실제로 쓰는 별칭(ipyang.vercel.app)과 다를 수 있다. 그래서
+ * `SITE_URL` 을 명시하는 쪽이 정답이고, 폴백은 어디까지나 최후의 수단이다.
+ */
 export function siteUrl(): string {
-  const explicit = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  const explicit = process.env.SITE_URL?.trim();
   if (explicit) return explicit.replace(/\/$/, '');
   const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
   return vercel ? `https://${vercel}` : 'https://ipyang.vercel.app';

@@ -85,9 +85,16 @@ Vercel 이미지 변환은 플랜 할당량을 쓰고, 공고는 매일 수천 �
 |---|---|---|
 | 04:00 | `/api/cron/refresh` | 데이터 수집 (아침 첫 사용자의 콜드를 줄인다) |
 | 07:30 | `/api/cron/new-notices` | 오늘 시작된 공고 알림 |
-| 09:00 / 18:00 | `/api/cron/summary` | 공고중·오늘 마감·3일 이내 현황 |
+| 09:00 | `/api/cron/summary-morning` | 공고중·오늘 마감·3일 이내 현황 |
+| 18:00 | `/api/cron/summary-evening` | 위와 동일 |
 
 `vercel.json` 의 cron 은 **UTC 기준**이라 9시간을 빼서 적었다.
+
+요약은 아침·저녁 **경로를 나눴다**. Vercel 은 같은 path 를 두 스케줄로 등록하는 것을
+지원하지만(`x-vercel-cron-schedule` 헤더로 구분), `vercel crons ls` 는 크론을 path 로
+식별해 비교하기 때문에 중복 path 를 하나로 합쳐 보고 존재하지 않는 "modified" 변경과
+`pending deploy` 경고를 계속 띄운다. 경로를 나누면 배포 상태와 설정이 1:1 로 맞는다.
+실제 로직은 `lib/summary-cron.ts` 하나를 두 라우트가 공유한다.
 
 크론 라우트는 `CRON_SECRET` 으로 보호한다. Discord 로 메시지를 보내고 외부 API 를
 전수 호출하는 경로라 열려 있으면 도배와 할당량 소진에 노출된다.
