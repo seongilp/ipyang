@@ -1,0 +1,8 @@
+{
+  "crons": [
+    { "path": "/api/cron/refresh", "schedule": "0 19 * * *" },
+    { "path": "/api/cron/new-notices", "schedule": "30 22 * * *" },
+    { "path": "/api/cron/summary", "schedule": "0 0 * * *" },
+    { "path": "/api/cron/summary", "schedule": "0 9 * * *" }
+  ]
+}

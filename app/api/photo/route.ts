@@ -17,6 +17,12 @@ export const maxDuration = 20;
 /** 이 호스트 외에는 프록시하지 않는다. 열린 프록시가 되면 안 된다. */
 const ALLOWED_HOST = 'openapi.animal.go.kr';
 
+/** 1x1 투명 GIF. 원본이 실패했을 때 깨진 이미지 대신 돌려준다. */
+const TRANSPARENT_PIXEL = Uint8Array.from(
+  atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'),
+  (c) => c.charCodeAt(0),
+);
+
 export async function GET(request: Request): Promise<NextResponse> {
   const target = new URL(request.url).searchParams.get('u');
   if (!target) {
@@ -34,15 +40,35 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: '허용되지 않은 호스트입니다.' }, { status: 403 });
   }
 
-  try {
-    const upstream = await fetch(source, {
+  /*
+   * 원본 서버가 간헐적으로 실패한다 — 한 화면 44장 중 2장이 502 로 떨어졌다(실측).
+   * 개별 요청을 따로 치면 12장 모두, 동시 20장도 모두 성공하므로 부하 문제가 아니라
+   * 서버 쪽 산발적 오류로 보인다. 그래서 짧게 한 번 재시도한다.
+   */
+  const attempt = async (): Promise<Response> =>
+    fetch(source, {
       // 원본 사진은 바뀌지 않으므로 오래 잡아 둔다.
       next: { revalidate: 604_800 },
       signal: AbortSignal.timeout(15_000),
     });
 
-    if (!upstream.ok) {
-      return NextResponse.json({ error: `원본 응답 ${upstream.status}` }, { status: 502 });
+  try {
+    let upstream = await attempt().catch(() => null);
+    if (!upstream?.ok) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      upstream = await attempt().catch(() => null);
+    }
+
+    if (!upstream?.ok) {
+      // 실패해도 카드 레이아웃이 깨지지 않도록 투명 1x1 을 돌려준다.
+      // 502 를 그대로 주면 브라우저 콘솔이 에러로 뒤덮이고 깨진 이미지 아이콘이 뜬다.
+      return new NextResponse(TRANSPARENT_PIXEL, {
+        headers: {
+          'Content-Type': 'image/gif',
+          // 실패는 짧게만 캐시한다. 다음에 성공할 수 있다.
+          'Cache-Control': 'public, max-age=60',
+        },
+      });
     }
 
     const buffer = await upstream.arrayBuffer();
@@ -59,6 +85,8 @@ export async function GET(request: Request): Promise<NextResponse> {
       },
     });
   } catch {
-    return NextResponse.json({ error: '사진을 가져오지 못했습니다.' }, { status: 502 });
+    return new NextResponse(TRANSPARENT_PIXEL, {
+      headers: { 'Content-Type': 'image/gif', 'Cache-Control': 'public, max-age=60' },
+    });
   }
 }

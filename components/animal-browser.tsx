@@ -1,10 +1,11 @@
 'use client';
 
-import { Info, PawPrint } from 'lucide-react';
+import { Info, PawPrint, Search, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { AnimalCard } from '@/components/animal-card';
 import { AnimalDetail } from '@/components/animal-detail';
+import { HelpDialog, SearchDialog, useShortcuts } from '@/components/shortcuts';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SPECIES_OPTIONS, STATE_OPTIONS, type Animal } from '@/lib/animal';
@@ -17,8 +18,9 @@ interface Sido {
 
 interface Filters {
   upkind: string;
-  sido: string;
+  region: string;
   state: string;
+  keyword: string;
 }
 
 /*
@@ -26,10 +28,12 @@ interface Filters {
  * 개체라 마감까지 남은 날이 전부 음수다(실측: 60건 전부 -3~-12일).
  * 이 앱의 축이 마감이므로 기본 화면은 공고가 살아 있는 쪽이어야 한다.
  */
-const INITIAL: Filters = { upkind: '', sido: '', state: 'notice' };
+const INITIAL: Filters = { upkind: '', region: '', state: 'notice', keyword: '' };
 
 export function AnimalBrowser() {
   const [filters, setFilters] = useState<Filters>(INITIAL);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [sido, setSido] = useState<Sido[]>([]);
   const [animals, setAnimals] = useState<Animal[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -66,8 +70,9 @@ export function AnimalBrowser() {
       try {
         const query = new URLSearchParams({ page: String(page) });
         if (filters.upkind) query.set('upkind', filters.upkind);
-        if (filters.sido) query.set('sido', filters.sido);
+        if (filters.region) query.set('region', filters.region);
         if (filters.state) query.set('state', filters.state);
+        if (filters.keyword) query.set('q', filters.keyword);
 
         const response = await fetch(`/api/animals?${query}`, { signal: controller.signal });
         const body = await response.json();
@@ -87,6 +92,16 @@ export function AnimalBrowser() {
     void load();
     return () => controller.abort();
   }, [filters, page]);
+
+  useShortcuts({
+    onHelp: () => setHelpOpen(true),
+    onSearch: () => setSearchOpen(true),
+    onClose: () => {
+      setHelpOpen(false);
+      setSearchOpen(false);
+      setSelected(null);
+    },
+  });
 
   const update = useCallback((patch: Partial<Filters>) => {
     setFilters((current) => ({ ...current, ...patch }));
@@ -108,7 +123,45 @@ export function AnimalBrowser() {
           <span className="text-muted-foreground text-xs">
             {loading ? '불러오는 중…' : `${totalCount.toLocaleString()}마리`}
           </span>
+
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              aria-label="검색 (⌘K)"
+              title="검색 (⌘K)"
+              className="border-border hover:bg-accent flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
+            >
+              <Search className="size-3.5" />
+              <span className="hidden sm:inline">검색</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              aria-label="사용법 (?)"
+              title="사용법 (?)"
+              className="border-border hover:bg-accent size-7 rounded-full border text-xs"
+            >
+              ?
+            </button>
+          </div>
         </div>
+
+        {filters.keyword && (
+          <div className="mb-2 flex items-center gap-1.5">
+            <span className="bg-primary/15 text-primary flex items-center gap-1 rounded-full px-2.5 py-1 text-xs">
+              “{filters.keyword}”
+              <button
+                type="button"
+                onClick={() => update({ keyword: '' })}
+                aria-label="검색어 지우기"
+                className="hover:bg-primary/20 rounded-full"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-1.5">
           {SPECIES_OPTIONS.map((option) => (
@@ -134,18 +187,23 @@ export function AnimalBrowser() {
 
         {sido.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <FilterChip active={filters.sido === ''} onClick={() => update({ sido: '' })}>
+            <FilterChip active={filters.region === ''} onClick={() => update({ region: '' })}>
               전국
             </FilterChip>
-            {sido.map((region) => (
-              <FilterChip
-                key={region.code}
-                active={filters.sido === region.code}
-                onClick={() => update({ sido: region.code })}
-              >
-                {region.name.replace(/(특별시|광역시|특별자치시|특별자치도)$/, '')}
-              </FilterChip>
-            ))}
+            {sido.map((region) => {
+              // 메모리 필터는 보호소 관할 기관명(orgNm)에 포함되는지로 판정한다.
+              // orgNm 이 '경기도 오산시' 처럼 시도명으로 시작하므로 접두어가 그대로 키가 된다.
+              const key = region.name.replace(/(특별시|광역시|특별자치시|특별자치도)$/, '');
+              return (
+                <FilterChip
+                  key={region.code}
+                  active={filters.region === key}
+                  onClick={() => update({ region: key })}
+                >
+                  {key}
+                </FilterChip>
+              );
+            })}
           </div>
         )}
       </header>
@@ -207,6 +265,14 @@ export function AnimalBrowser() {
       )}
 
       {selected && <AnimalDetail animal={selected} onClose={() => setSelected(null)} />}
+      {helpOpen && <HelpDialog onClose={() => setHelpOpen(false)} />}
+      {searchOpen && (
+        <SearchDialog
+          value={filters.keyword}
+          onChange={(keyword) => update({ keyword })}
+          onClose={() => setSearchOpen(false)}
+        />
+      )}
     </div>
   );
 }
