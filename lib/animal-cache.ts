@@ -15,27 +15,51 @@ import { normalizeAnimal, type Animal } from './animal';
 
 const MAX_PAGES = 12;
 
-/** 서버 인스턴스 안에서만 사는 캐시. Vercel 함수는 언제든 새로 뜨므로 최선의 추정이다. */
-let cached: { at: number; animals: Animal[] } | null = null;
+/**
+ * 한 번의 전수 수집 결과.
+ *
+ * `fetchedAt` 을 같이 들고 다니는 이유: 이게 없으면 "데이터가 실제로 갱신됐는지"를
+ * 밖에서 확인할 방법이 없다. 응답 본문을 바이트 단위로 비교하는 수밖에 없었고,
+ * 실제로 크론이 캐시만 읽고 있던 결함을 잡는 데 그 때문에 시간을 크게 썼다.
+ */
+export interface AnimalSnapshot {
+  animals: Animal[];
+  fetchedAt: string;
+}
 
-/** 서울시 데이터와 달리 공고는 하루 단위로 바뀐다. 30분이면 충분히 신선하다. */
+/** 서버 인스턴스 안에서만 사는 캐시. Vercel 함수는 언제든 새로 뜨므로 최선의 추정이다. */
+let cached: { at: number; snapshot: AnimalSnapshot } | null = null;
+
+/**
+ * 서울시 데이터와 달리 공고는 하루 단위로 바뀐다. 30분이면 충분히 신선하다.
+ *
+ * 알림 크론이 발송 직전에 강제 수집하게 바꾼 뒤에도 30분을 유지한다.
+ * 알림 시각(07:30/09:00/18:00) 사이는 여전히 이 TTL 이 신선도를 정하는데,
+ * 18:00 → 다음 07:30 이 13시간 반이라 가장 긴 구간이다. 보호소 등록은 업무 시간 내내
+ * 들어오므로 이 창을 늘리면 사용자가 보는 목록이 실제로 뒤처진다.
+ * 비용도 막지 않는다 — 전수 수집이 7콜이라 최악(30분마다 갱신)이 하루 336콜,
+ * data.go.kr 일 10,000 한도에 여유가 크다. 그래서 바꾸지 않는다.
+ */
 const TTL_MS = 30 * 60 * 1000;
 
 /** 진행 중인 수집. 동시에 여러 요청이 들어와도 업스트림은 한 번만 친다. */
-let inflight: Promise<Animal[]> | null = null;
+let inflight: Promise<AnimalSnapshot> | null = null;
 
-async function collect(): Promise<Animal[]> {
+async function collect(force = false): Promise<AnimalSnapshot> {
   const rows: RawAnimal[] = [];
   let totalCount = 0;
 
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const result = await fetchAnimals({ page, rows: MAX_ROWS });
+    const result = await fetchAnimals({ page, rows: MAX_ROWS }, force);
     totalCount = result.totalCount;
     rows.push(...result.items);
     if (result.items.length < MAX_ROWS || rows.length >= totalCount) break;
   }
 
-  return rows.map(normalizeAnimal).sort(byDeadline);
+  return {
+    animals: rows.map(normalizeAnimal).sort(byDeadline),
+    fetchedAt: new Date().toISOString(),
+  };
 }
 
 /** 마감 임박 순. 기한 미상은 뒤로, 이미 지난 것은 더 뒤로(최근에 끝난 순). */
@@ -51,20 +75,42 @@ export function byDeadline(a: Animal, b: Animal): number {
   return left - right;
 }
 
-export async function getAllAnimals(): Promise<Animal[]> {
-  if (cached && Date.now() - cached.at < TTL_MS) return cached.animals;
+export async function getAnimalSnapshot(): Promise<AnimalSnapshot> {
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.snapshot;
   if (inflight) return inflight;
 
   inflight = collect()
-    .then((animals) => {
-      cached = { at: Date.now(), animals };
-      return animals;
+    .then((snapshot) => {
+      cached = { at: Date.now(), snapshot };
+      return snapshot;
     })
     .finally(() => {
       inflight = null;
     });
 
   return inflight;
+}
+
+export async function getAllAnimals(): Promise<Animal[]> {
+  return (await getAnimalSnapshot()).animals;
+}
+
+/**
+ * 캐시를 전부 무시하고 지금 업스트림에서 다시 받는다. **알림 크론 전용.**
+ *
+ * 캐시가 두 겹이라 둘 다 뚫어야 한다 —
+ *  (1) 이 파일의 `cached`/`TTL_MS` 메모리 캐시: `getAnimalSnapshot` 을 아예 거치지 않는다.
+ *  (2) Next 의 Data Cache: `collect(true)` → `fetchAnimals(..., force)` → `cache: 'no-store'`.
+ * 한 겹만 뚫으면 여전히 옛 공고 목록이 발송된다.
+ *
+ * `inflight` 는 건드리지 않는다. 강제 수집이 그 자리를 차지하면 동시에 들어온
+ * 사용자 요청의 중복 제거가 깨진다. 대신 결과로 `cached` 만 갱신해서,
+ * 알림 직후 접속한 사용자도 방금 받은 데이터를 보게 한다(워밍 효과).
+ */
+export async function getAnimalSnapshotFresh(): Promise<AnimalSnapshot> {
+  const snapshot = await collect(true);
+  cached = { at: Date.now(), snapshot };
+  return snapshot;
 }
 
 export interface AnimalFilters {

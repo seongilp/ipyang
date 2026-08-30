@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { assertCron, siteUrl } from '@/lib/cron-auth';
-import { getAllAnimals } from '@/lib/animal-cache';
+import { getAnimalSnapshotFresh } from '@/lib/animal-cache';
 import { hasWebhook, sendNewNotices } from '@/lib/discord';
 
 /**
@@ -29,8 +29,16 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json({ ok: false, reason: 'DISCORD_WEBHOOK_URL 없음' }, { status: 503 });
   }
 
-  const animals = await getAllAnimals();
+  // 발송 직전 강제 수집. "오늘 시작된 공고"를 찾는 크론이라 캐시된 목록이면
+  // 오늘치가 아직 안 들어와 0건으로 조용히 넘어간다 — 이 라우트에선 치명적이다.
+  const started = Date.now();
+  const { animals, fetchedAt } = await getAnimalSnapshotFresh();
   const sent = await sendNewNotices(animals, todayKst(), siteUrl());
 
-  return NextResponse.json({ ok: true, newCount: sent });
+  return NextResponse.json({
+    ok: true,
+    newCount: sent,
+    fetchedAt,
+    elapsedMs: Date.now() - started,
+  });
 }

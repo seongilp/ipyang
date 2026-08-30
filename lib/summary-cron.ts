@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { assertCron, siteUrl } from './cron-auth';
-import { getAllAnimals } from './animal-cache';
+import { getAnimalSnapshotFresh } from './animal-cache';
 import { hasWebhook, sendSummary } from './discord';
 
 /**
@@ -24,8 +24,15 @@ export async function runSummaryCron(request: Request): Promise<Response> {
     return NextResponse.json({ ok: false, reason: 'DISCORD_WEBHOOK_URL 없음' }, { status: 503 });
   }
 
-  const animals = await getAllAnimals();
+  // 발송 직전 강제 수집. 요약은 "지금 몇 마리가 공고 중인가"라 캐시로 보내면 의미가 없다.
+  const started = Date.now();
+  const { animals, fetchedAt } = await getAnimalSnapshotFresh();
   await sendSummary(animals, siteUrl());
 
-  return NextResponse.json({ ok: true, total: animals.length });
+  return NextResponse.json({
+    ok: true,
+    total: animals.length,
+    fetchedAt,
+    elapsedMs: Date.now() - started,
+  });
 }

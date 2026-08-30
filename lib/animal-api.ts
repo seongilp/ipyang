@@ -58,13 +58,22 @@ interface StandardResponse<T> {
   OpenAPI_ServiceResponse?: { cmmMsgHeader?: { errMsg?: string; returnAuthMsg?: string } };
 }
 
+/**
+ * `force` 는 알림 크론 전용이다.
+ *
+ * 왜: `next: { revalidate }` 는 "이만큼 지나면 다시 받아라"이지 "지금 받아라"가 아니다.
+ * revalidate 창이 안 지났으면 Next 는 Data Cache 의 옛 응답을 그대로 돌려주고,
+ * 그러면 알림이 옛 공고 목록으로 나간다. 발송 직전 경로에서만 `cache: 'no-store'` 로
+ * Data Cache 를 건너뛴다. 사용자 경로는 계속 revalidate 를 써서 쿼터를 지킨다.
+ */
 async function call<T>(
   endpoint: string,
   params: QueryParams,
   revalidate: number,
+  force = false,
 ): Promise<{ items: T[]; totalCount: number }> {
   const response = await fetch(buildUrl(endpoint, params), {
-    next: { revalidate },
+    ...(force ? { cache: 'no-store' as const } : { next: { revalidate } }),
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(20_000),
   });
@@ -141,8 +150,8 @@ export interface AnimalQuery {
   endde?: string;
 }
 
-/** 구조동물 목록. 공고는 매일 바뀌므로 30분 캐시. */
-export function fetchAnimals(query: AnimalQuery = {}) {
+/** 구조동물 목록. 공고는 매일 바뀌므로 30분 캐시. `force` 면 캐시를 건너뛴다. */
+export function fetchAnimals(query: AnimalQuery = {}, force = false) {
   return call<RawAnimal>(
     ABANDONMENT,
     {
@@ -155,6 +164,7 @@ export function fetchAnimals(query: AnimalQuery = {}) {
       endde: query.endde,
     },
     1_800,
+    force,
   );
 }
 

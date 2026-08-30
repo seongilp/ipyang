@@ -83,12 +83,17 @@ Vercel 이미지 변환은 플랜 할당량을 쓰고, 공고는 매일 수천 �
 
 | 시각 (KST) | 라우트 | 내용 |
 |---|---|---|
-| 04:00 | `/api/cron/refresh` | 데이터 수집 (아침 첫 사용자의 콜드를 줄인다) |
 | 07:30 | `/api/cron/new-notices` | 오늘 시작된 공고 알림 |
 | 09:00 | `/api/cron/summary-morning` | 공고중·오늘 마감·3일 이내 현황 |
 | 18:00 | `/api/cron/summary-evening` | 위와 동일 |
 
 `vercel.json` 의 cron 은 **UTC 기준**이라 9시간을 빼서 적었다.
+
+세 라우트 모두 **발송 직전에 업스트림에서 강제로 다시 받는다**(`getAnimalSnapshotFresh`).
+메모리 캐시와 Next Data Cache 를 둘 다 건너뛴다 — 한 겹만 뚫으면 옛 공고가 나간다.
+예전에 있던 `/api/cron/refresh` 는 지웠다. `next: { revalidate }` 는 "지금 받아라"가
+아니라서 실제로 아무것도 갱신하지 않았고(호출 전후 응답이 1바이트도 안 바뀌었다),
+데워둔 캐시도 다음 알림 크론까지 2시간 31분이 남아 30분 TTL 이 먼저 죽었다.
 
 요약은 아침·저녁 **경로를 나눴다**. Vercel 은 같은 path 를 두 스케줄로 등록하는 것을
 지원하지만(`x-vercel-cron-schedule` 헤더로 구분), `vercel crons ls` 는 크론을 path 로

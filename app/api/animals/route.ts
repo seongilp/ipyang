@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { AnimalApiFailure } from '@/lib/animal-api';
-import { filterAnimals, getAllAnimals, SPECIES_BY_CODE } from '@/lib/animal-cache';
+import { filterAnimals, getAnimalSnapshot, SPECIES_BY_CODE } from '@/lib/animal-cache';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -20,9 +20,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   const page = Math.max(1, Number(params.get('page')) || 1);
 
   try {
-    const all = await getAllAnimals();
+    const { animals, fetchedAt } = await getAnimalSnapshot();
 
-    const filtered = filterAnimals(all, {
+    const filtered = filterAnimals(animals, {
       species: SPECIES_BY_CODE[params.get('upkind') ?? ''],
       region: params.get('region') ?? undefined,
       state: params.get('state') ?? undefined,
@@ -35,6 +35,8 @@ export async function GET(request: Request): Promise<NextResponse> {
       {
         totalCount: filtered.length,
         pageSize: PAGE_SIZE,
+        // 업스트림에서 실제로 받아온 시각. 갱신 여부를 밖에서 확인할 유일한 단서다.
+        fetchedAt,
         animals: filtered.slice(start, start + PAGE_SIZE),
       },
       { headers: { 'Cache-Control': 'public, s-maxage=1800, stale-while-revalidate=7200' } },
