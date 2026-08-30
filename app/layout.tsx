@@ -45,6 +45,14 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
          * brotli 로 8.4KB 인 데다 CDN 히트라 손해가 작다. 반대로 기본 화면은 압도적 다수다.
          * 실패는 여기서 삼키고 null 로 떨어뜨린다 — 처리기 없는 rejection 이 콘솔을 더럽히고,
          * 어차피 컴포넌트가 평소 경로로 다시 받으면 된다.
+         *
+         * 남은 한계: Next 가 이 스크립트를 자기 `<link rel="stylesheet">` **뒤에** 넣는데,
+         * 동기 인라인 스크립트는 앞선 스타일시트가 다 올 때까지 실행되지 않는다. 프로덕션
+         * 실측에서 CSS 가 305ms 에 끝나고 이 요청이 307ms 에 시작했다. 즉 지금은 CSS 37KB
+         * 뒤에 줄을 선다 — 그래도 JS 157KB + 파싱 + 하이드레이션을 기다리던 것보다는 훨씬
+         * 앞이다. 더 당기려면 head 안에서 스타일시트보다 앞에 놓아야 하는데 그 순서는 Next 가
+         * 정하고, `rel="preload"` 로 preload 스캐너를 태우는 방법은 위에 적은 매칭 문제로
+         * 요청이 두 번 나갈 위험이 있어 택하지 않았다.
          */}
         <script
           dangerouslySetInnerHTML={{
