@@ -89,12 +89,24 @@ export async function GET(request: Request): Promise<NextResponse> {
 
     const start = (page - 1) * PAGE_SIZE;
 
+    /*
+     * 상태(processState)별 건수. 종료 요약 배너가 하위 유형 분포를 그리는 데 쓴다.
+     * 한 페이지(60건)만 받는 클라이언트는 전체 분포를 알 수 없으므로 여기서 전수 집계해 넘긴다.
+     * O(n) 이고 filtered 는 이미 메모리에 있어 부담이 없다. 필터가 걸리면 그 부분집합의 분포라,
+     * 배너 수치가 실제로 보이는 목록과 항상 일치한다.
+     */
+    const stateBreakdown: Record<string, number> = {};
+    for (const animal of filtered) {
+      stateBreakdown[animal.state] = (stateBreakdown[animal.state] ?? 0) + 1;
+    }
+
     return NextResponse.json(
       {
         totalCount: filtered.length,
         pageSize: PAGE_SIZE,
         // 업스트림에서 실제로 받아온 시각. 갱신 여부를 밖에서 확인할 유일한 단서다.
         fetchedAt,
+        stateBreakdown,
         animals: filtered.slice(start, start + PAGE_SIZE),
       },
       { headers: { 'Cache-Control': cacheControl() } },

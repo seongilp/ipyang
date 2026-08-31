@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 
 import { AnimalCard } from '@/components/animal-card';
 import { AnimalDetail } from '@/components/animal-detail';
+import { ReturnSummary } from '@/components/return-summary';
 import { HelpDialog, SearchDialog, useShortcuts } from '@/components/shortcuts';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -100,6 +101,9 @@ function writeUrl(filters: Filters, page: number): string {
 interface AnimalsPage {
   totalCount: number;
   animals: Animal[];
+  // 종료 요약 배너가 쓰는 값. 정상 응답에만 있고, 종료 필터가 아니면 배너를 안 그린다.
+  fetchedAt?: string;
+  stateBreakdown?: Record<string, number>;
 }
 
 /** 라우트가 400/502 에 실어 보내는 형태. 정상 응답에는 `error` 가 없다. */
@@ -130,6 +134,8 @@ export function AnimalBrowser() {
   const [sido, setSido] = useState<Sido[]>([]);
   const [animals, setAnimals] = useState<Animal[]>([]);
   const [totalCount, setTotalCount] = useState(0);
+  const [breakdown, setBreakdown] = useState<Record<string, number>>({});
+  const [fetchedAt, setFetchedAt] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Animal | null>(null);
@@ -179,6 +185,8 @@ export function AnimalBrowser() {
         const result = body as AnimalsPage;
         setAnimals(result.animals);
         setTotalCount(result.totalCount);
+        setBreakdown(result.stateBreakdown ?? {});
+        setFetchedAt(result.fetchedAt);
       } catch (cause) {
         if (!controller.signal.aborted) {
           setError(cause instanceof Error ? cause.message : '조회 실패');
@@ -334,6 +342,11 @@ export function AnimalBrowser() {
         <p className="border-destructive/40 bg-destructive/10 mb-4 rounded-lg border p-3 text-xs">
           {error}
         </p>
+      )}
+
+      {/* 종료 필터에서만, 그리고 목록이 실제로 그려질 때만 요약을 보인다. */}
+      {filters.state === 'return' && !loading && totalCount > 0 && (
+        <ReturnSummary breakdown={breakdown} fetchedAt={fetchedAt} />
       )}
 
       {loading ? (

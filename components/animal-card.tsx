@@ -3,7 +3,7 @@
 import { Phone } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
-import { displayState, formatYmd, type Animal } from '@/lib/animal';
+import { displayState, endOutcome, endOutcomeLabel, formatYmd, isEnded, type Animal } from '@/lib/animal';
 import { cn } from '@/lib/utils';
 
 /*
@@ -28,8 +28,24 @@ const TONE = {
   calm: 'bg-neutral-900 text-neutral-100',
   warn: 'bg-amber-400 text-amber-950',
   urgent: 'bg-red-700 text-white',
+  /*
+   * 종료 결과 배지. 배경이 사진 위에 얹히므로 위 배지들과 같은 원칙 — **불투명**으로 대비를 고정한다.
+   *   삶(반환·입양·기증·방사) emerald-800 + white     7.68:1
+   *   죽음(자연사·안락사)      neutral-800 + neutral-100 13.88:1
+   * (흰/검은 사진 어느 쪽에서도 동일. WCAG AA 4.5:1 을 양쪽 다 넘는다.)
+   * 삶은 초록으로 살려 내고 죽음은 무채색으로 가라앉혀, 색만 봐도 결과가 갈리게 한다.
+   */
+  life: 'bg-emerald-800 text-white',
+  loss: 'bg-neutral-800 text-neutral-100',
 } as const;
 
+/**
+ * 진행 중 공고의 마감 배지.
+ *
+ * **종료된 개체에는 쓰지 않는다** — 종료 개체는 noticeEdt 가 오늘이라 daysLeft 가 0 으로
+ * 나와 '오늘 마감'(빨강)이 붙었는데, 이미 결과가 난 아이에게 마감을 알리는 건 틀렸고
+ * 오해를 부른다. 그쪽은 endBadge 가 결과(반환/자연사…)를 대신 보여준다.
+ */
 function deadlineTone(daysLeft: number | null): {
   label: string;
   className: string;
@@ -42,8 +58,18 @@ function deadlineTone(daysLeft: number | null): {
   return { label: `${daysLeft}일 남음`, className: TONE.calm };
 }
 
+/** 종료 개체의 결과 배지. 마감 대신 '반환'·'자연사' 같은 결과를 결과별 색으로 보여준다. */
+function endBadge(state: string): { label: string; className: string } {
+  return {
+    label: endOutcomeLabel(state),
+    className: endOutcome(state) === 'life' ? TONE.life : TONE.loss,
+  };
+}
+
 export function AnimalCard({ animal, onSelect }: { animal: Animal; onSelect: (a: Animal) => void }) {
-  const tone = deadlineTone(animal.daysLeft);
+  const ended = isEnded(animal.state);
+  // 종료된 아이는 마감 배지 대신 결과 배지. 마감은 이미 지난 이야기다.
+  const tone = ended ? endBadge(animal.state) : deadlineTone(animal.daysLeft);
 
   return (
     <button
@@ -67,7 +93,12 @@ export function AnimalCard({ animal, onSelect }: { animal: Animal; onSelect: (a:
             alt={`${animal.breed} ${animal.sex}`}
             loading="lazy"
             decoding="async"
-            className="size-full object-cover transition-transform group-hover:scale-105"
+            className={cn(
+              'size-full object-cover transition-transform group-hover:scale-105',
+              // 종료된 아이의 사진은 회색으로. 결과가 난 아이임을 사진 자체로 알린다.
+              // 다크 테마에서 회색조가 그대로면 너무 가라앉아 brightness 를 살짝 올린다.
+              ended && 'grayscale brightness-105 dark:brightness-110',
+            )}
           />
         ) : (
           <div className="text-muted-foreground flex size-full items-center justify-center text-xs">

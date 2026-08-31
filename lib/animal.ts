@@ -1,5 +1,5 @@
 import type { RawAnimal } from './animal-api';
-import { daysUntilKst } from './kst';
+import { dayToYmd, daysUntilKst, kstToday } from './kst';
 
 /**
  * 화면이 쓰는 구조동물 모델.
@@ -64,6 +64,50 @@ export function displayState(animal: Pick<Animal, 'state' | 'daysLeft'>): string
   if (animal.state.startsWith('종료')) return animal.state;
   if (animal.daysLeft === null) return animal.state;
   return animal.daysLeft >= 0 ? '공고중' : '보호중';
+}
+
+/** 공고가 이미 끝난(종료된) 개체인가. `processState` 가 '종료(...)' 로 온다. */
+export function isEnded(state: string): boolean {
+  return state.startsWith('종료');
+}
+
+/**
+ * 종료 결과를 **삶/죽음** 두 축으로 가른다.
+ *
+ * 왜 이 구분이 핵심인가: '종료' 안에는 성격이 완전히 다른 결과가 섞여 있다(실측 2,126건).
+ *   반환·입양·기증·방사 — 살아서 나갔다(전체의 62.6%)
+ *   자연사·안락사       — 죽었다(37.4%)
+ * 한 문장("떠나갔습니다")으로 뭉치면 가족 품으로 돌아간 절반을 죽은 것처럼 말하게 된다.
+ *
+ * 죽음 코드만 화이트리스트로 못박는다. 정부가 새 코드를 추가하더라도(미지의 코드는)
+ * 죽음으로 단정하지 않고 '삶' 쪽으로 두는 편이 덜 위험하다 — 산 아이를 죽었다고
+ * 말하는 것이 그 반대보다 훨씬 큰 왜곡이기 때문이다.
+ */
+export type EndOutcome = 'life' | 'loss';
+
+const LOSS_KINDS = new Set(['자연사', '안락사']);
+
+/** '종료(반환)' → '반환'. 괄호 안 라벨만 뽑는다. 형식이 어긋나면 '종료'. */
+export function endOutcomeLabel(state: string): string {
+  return /^종료\(([^)]+)\)/.exec(state)?.[1] ?? '종료';
+}
+
+export function endOutcome(state: string): EndOutcome {
+  return LOSS_KINDS.has(endOutcomeLabel(state)) ? 'loss' : 'life';
+}
+
+/**
+ * ISO 인스턴트(예: 업스트림 수집 시각 `fetchedAt`) → **KST** '8월 31일'.
+ *
+ * 왜 KST 로 변환하나: `fetchedAt` 은 UTC 인스턴트라 KST 자정 근처면 날짜가 하루 어긋난다.
+ * 날짜 계산을 새로 짜지 않고 `kst.ts` 의 검증된 헬퍼로만 KST 달력 날짜를 뽑는다 —
+ * 이 파일들이 존재하는 이유가 하루 밀림 결함이었다.
+ */
+export function formatKstMonthDay(isoInstant: string | undefined): string | null {
+  const ms = Date.parse(isoInstant ?? '');
+  if (Number.isNaN(ms)) return null;
+  const ymd = dayToYmd(kstToday(ms));
+  return `${Number(ymd.slice(4, 6))}월 ${Number(ymd.slice(6, 8))}일`;
 }
 
 const SEX: Record<string, Animal['sex']> = { M: '수컷', F: '암컷' };
