@@ -1,16 +1,19 @@
 'use client';
 
-import { Info, PawPrint, Search, X } from 'lucide-react';
+import { Info, List, Map as MapIcon, PawPrint, Search, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import { AnimalCard } from '@/components/animal-card';
 import { AnimalDetail } from '@/components/animal-detail';
+import { RegionInfographic } from '@/components/region-infographic';
+import { RegionMap } from '@/components/region-map';
 import { ReturnSummary } from '@/components/return-summary';
 import { HelpDialog, SearchDialog, useShortcuts } from '@/components/shortcuts';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SPECIES_OPTIONS, STATE_OPTIONS, type Animal } from '@/lib/animal';
 import { takeAnimalsPreload } from '@/lib/animals-preload';
+import type { OutcomeTally, RegionAgg } from '@/lib/map-data';
 import { cn } from '@/lib/utils';
 
 interface Sido {
@@ -23,6 +26,8 @@ interface Filters {
   region: string;
   state: string;
   keyword: string;
+  /** 시군구 코드(`<시도2자리>_<시군구명>`). 지도에서 지역을 눌러 목록으로 넘어올 때 걸린다. */
+  rc: string;
 }
 
 /*
@@ -30,7 +35,7 @@ interface Filters {
  * 개체라 마감까지 남은 날이 전부 음수다(실측: 60건 전부 -3~-12일).
  * 이 앱의 축이 마감이므로 기본 화면은 공고가 살아 있는 쪽이어야 한다.
  */
-const INITIAL: Filters = { upkind: '', region: '', state: 'notice', keyword: '' };
+const INITIAL: Filters = { upkind: '', region: '', state: 'notice', keyword: '', rc: '' };
 
 const SPECIES_CODES = new Set<string>(SPECIES_OPTIONS.map((option) => option.code));
 const STATE_CODES = new Set<string>(STATE_OPTIONS.map((option) => option.code));
@@ -42,7 +47,10 @@ const STATE_CODES = new Set<string>(STATE_OPTIONS.map((option) => option.code));
  * API 가 모르는 upkind/state 에 400 을 주도록 바뀌었으므로 여기서 걸러야
  * 오타 링크 하나가 화면 전체를 에러로 만들지 않는다.
  */
-function readUrl(search: string): { filters: Filters; page: number } {
+/** 목록/지도 전환도 주소에 싣는다. 딥링크·새로고침·뒤로가기에서 보던 화면이 유지된다. */
+type ViewMode = 'list' | 'map';
+
+function readUrl(search: string): { filters: Filters; page: number; view: ViewMode } {
   const params = new URLSearchParams(search);
   const upkind = params.get('upkind') ?? '';
   const state = params.get('state');
@@ -55,8 +63,11 @@ function readUrl(search: string): { filters: Filters; page: number } {
       // state 가 아예 없으면 기본값(공고중), 빈 문자열이면 사용자가 고른 '전체'다.
       state: state !== null && STATE_CODES.has(state) ? state : INITIAL.state,
       keyword: params.get('q') ?? INITIAL.keyword,
+      // 코드 형식(`<두자리>_<이름>`)만 통과시킨다. 주소창은 사용자가 손댈 수 있는 입력이다.
+      rc: /^\d{2}_.+/.test(params.get('rc') ?? '') ? (params.get('rc') as string) : INITIAL.rc,
     },
     page: Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1,
+    view: params.get('view') === 'map' ? 'map' : 'list',
   };
 }
 
@@ -86,14 +97,17 @@ function pushUrl(next: string, replace = false): void {
 }
 
 /** 필터 → 쿼리스트링. 기본값은 적지 않아 주소가 짧게 유지된다. */
-function writeUrl(filters: Filters, page: number): string {
+function writeUrl(filters: Filters, page: number, view: ViewMode): string {
   const params = new URLSearchParams();
   if (filters.upkind) params.set('upkind', filters.upkind);
   if (filters.region) params.set('region', filters.region);
   // '전체'(빈 문자열)도 반드시 적는다. 없으면 기본값 '공고중' 으로 되돌아간다.
   if (filters.state !== INITIAL.state) params.set('state', filters.state);
   if (filters.keyword) params.set('q', filters.keyword);
-  if (page > 1) params.set('page', String(page));
+  if (filters.rc) params.set('rc', filters.rc);
+  // 지도에는 페이지 개념이 없다. 지도일 때 page 는 적지 않는다.
+  if (page > 1 && view === 'list') params.set('page', String(page));
+  if (view === 'map') params.set('view', 'map');
   const query = params.toString();
   return query ? `${window.location.pathname}?${query}` : window.location.pathname;
 }
@@ -127,7 +141,7 @@ export function AnimalBrowser() {
     () => window.location.search,
     () => '',
   );
-  const { filters, page } = useMemo(() => readUrl(search), [search]);
+  const { filters, page, view } = useMemo(() => readUrl(search), [search]);
 
   const [helpOpen, setHelpOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -139,6 +153,24 @@ export function AnimalBrowser() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Animal | null>(null);
+
+  // 지도 상태. 목록과 별도로 시군구 집계를 받는다(경량 집계라 페이로드가 다르다).
+  const [regions, setRegions] = useState<RegionAgg[]>([]);
+  const [nationwide, setNationwide] = useState<OutcomeTally | null>(null);
+  const [unknownCount, setUnknownCount] = useState(0);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [mapFetchedAt, setMapFetchedAt] = useState<string | undefined>(undefined);
+
+  // 좁은 화면 여부. 지도 여백과 지도 안 범례 노출을 가른다.
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 640px)');
+    const apply = () => setCompact(query.matches);
+    apply();
+    query.addEventListener('change', apply);
+    return () => query.removeEventListener('change', apply);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -171,6 +203,7 @@ export function AnimalBrowser() {
         if (filters.region) query.set('region', filters.region);
         if (filters.state) query.set('state', filters.state);
         if (filters.keyword) query.set('q', filters.keyword);
+        if (filters.rc) query.set('rc', filters.rc);
 
         const url = `/api/animals?${query}`;
 
@@ -199,7 +232,50 @@ export function AnimalBrowser() {
     void load();
     return () => controller.abort();
     // filters 는 URL 에서 새로 만들어지는 객체라 참조로 비교하면 안 된다. 값으로 건다.
-  }, [filters.upkind, filters.region, filters.state, filters.keyword, page]);
+  }, [filters.upkind, filters.region, filters.state, filters.keyword, filters.rc, page]);
+
+  /*
+   * 지도 집계. 지도일 때만 받는다. 목록과 **같은 필터**(rc 제외)로 서버가 시군구별로 집계한다.
+   * rc 는 목록만 좁힌다 — 지도는 전국 분포를 계속 보여야 하고, 선택 지역은 강조로 표현한다.
+   */
+  useEffect(() => {
+    if (view !== 'map') return;
+    const controller = new AbortController();
+    const load = async () => {
+      setMapLoading(true);
+      setMapError(null);
+      try {
+        const query = new URLSearchParams();
+        if (filters.upkind) query.set('upkind', filters.upkind);
+        if (filters.region) query.set('region', filters.region);
+        if (filters.state) query.set('state', filters.state);
+        if (filters.keyword) query.set('q', filters.keyword);
+
+        const response = await fetch(`/api/animals/map?${query}`, { signal: controller.signal });
+        const body = (await response.json()) as unknown;
+        if (controller.signal.aborted) return;
+        if (isApiError(body)) throw new Error(body.message ?? '조회 실패');
+        const result = body as {
+          regions: RegionAgg[];
+          nationwide: OutcomeTally;
+          unknownCount: number;
+          fetchedAt?: string;
+        };
+        setRegions(result.regions);
+        setNationwide(result.nationwide);
+        setUnknownCount(result.unknownCount);
+        setMapFetchedAt(result.fetchedAt);
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setMapError(cause instanceof Error ? cause.message : '지도를 불러오지 못했습니다.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setMapLoading(false);
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [view, filters.upkind, filters.region, filters.state, filters.keyword]);
 
   useShortcuts({
     onHelp: () => setHelpOpen(true),
@@ -212,20 +288,29 @@ export function AnimalBrowser() {
   });
 
   // 필터가 바뀌면 1페이지부터 다시 본다. 3페이지에서 축종을 바꾸면 빈 화면이 나온다.
+  // 뷰(목록/지도)는 유지한다 — 지도를 보다 축종을 바꿔도 지도에 남아야 한다.
   const update = useCallback(
     (patch: Partial<Filters>, replace = false) => {
-      pushUrl(writeUrl({ ...filters, ...patch }, 1), replace);
+      pushUrl(writeUrl({ ...filters, ...patch }, 1, view), replace);
     },
-    [filters],
+    [filters, view],
   );
 
   // 페이지를 넘기면 목록 맨 위로. 안 그러면 새 목록의 중간부터 보게 된다.
   const goToPage = useCallback(
     (next: number) => {
-      pushUrl(writeUrl(filters, next));
+      pushUrl(writeUrl(filters, next, view));
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
-    [filters],
+    [filters, view],
+  );
+
+  // 목록↔지도 전환. 필터는 그대로 두고 뷰만 바꾼다.
+  const setView = useCallback(
+    (next: ViewMode) => {
+      pushUrl(writeUrl(filters, page, next));
+    },
+    [filters, page],
   );
 
   // 정렬은 서버가 전수로 한다. 페이지 안에서만 정렬하면 정작 오늘 마감인 개체가
@@ -245,6 +330,37 @@ export function AnimalBrowser() {
           </span>
 
           <div className="ml-auto flex items-center gap-1">
+            {/* 목록/지도 전환. 필터는 유지된다. */}
+            <div className="border-border mr-1 flex items-center rounded-full border p-0.5">
+              <button
+                type="button"
+                onClick={() => setView('list')}
+                aria-pressed={view === 'list'}
+                aria-label="목록으로 보기"
+                title="목록"
+                className={cn(
+                  'flex items-center gap-1 rounded-full px-2 py-1 text-xs transition-colors',
+                  view === 'list' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
+                )}
+              >
+                <List className="size-3.5" />
+                <span className="hidden sm:inline">목록</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setView('map')}
+                aria-pressed={view === 'map'}
+                aria-label="지도로 보기"
+                title="지도"
+                className={cn(
+                  'flex items-center gap-1 rounded-full px-2 py-1 text-xs transition-colors',
+                  view === 'map' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
+                )}
+              >
+                <MapIcon className="size-3.5" />
+                <span className="hidden sm:inline">지도</span>
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => setSearchOpen(true)}
@@ -267,19 +383,35 @@ export function AnimalBrowser() {
           </div>
         </div>
 
-        {filters.keyword && (
-          <div className="mb-2 flex items-center gap-1.5">
-            <span className="bg-primary/15 text-primary flex items-center gap-1 rounded-full px-2.5 py-1 text-xs">
-              “{filters.keyword}”
-              <button
-                type="button"
-                onClick={() => update({ keyword: '' })}
-                aria-label="검색어 지우기"
-                className="hover:bg-primary/20 rounded-full"
-              >
-                <X className="size-3" />
-              </button>
-            </span>
+        {(filters.keyword || filters.rc) && (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            {filters.keyword && (
+              <span className="bg-primary/15 text-primary flex items-center gap-1 rounded-full px-2.5 py-1 text-xs">
+                “{filters.keyword}”
+                <button
+                  type="button"
+                  onClick={() => update({ keyword: '' })}
+                  aria-label="검색어 지우기"
+                  className="hover:bg-primary/20 rounded-full"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            )}
+            {/* 지도에서 고른 시군구. 코드(`31_성남시`)의 이름 부분만 보인다. */}
+            {filters.rc && (
+              <span className="bg-primary/15 text-primary flex items-center gap-1 rounded-full px-2.5 py-1 text-xs">
+                {filters.rc.split('_')[1] ?? filters.rc}
+                <button
+                  type="button"
+                  onClick={() => update({ rc: '' })}
+                  aria-label="지역 필터 지우기"
+                  className="hover:bg-primary/20 rounded-full"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            )}
           </div>
         )}
 
@@ -338,55 +470,73 @@ export function AnimalBrowser() {
         </span>
       </p>
 
-      {error && (
+      {view === 'list' && error && (
         <p className="border-destructive/40 bg-destructive/10 mb-4 rounded-lg border p-3 text-xs">
           {error}
         </p>
       )}
 
-      {/* 종료 필터에서만, 그리고 목록이 실제로 그려질 때만 요약을 보인다. */}
-      {filters.state === 'return' && !loading && totalCount > 0 && (
-        <ReturnSummary breakdown={breakdown} fetchedAt={fetchedAt} />
-      )}
-
-      {loading ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {Array.from({ length: 12 }, (_, index) => (
-            <Skeleton key={index} className="aspect-3/4 w-full rounded-xl" />
-          ))}
-        </div>
-      ) : sorted.length === 0 ? (
-        <p className="text-muted-foreground py-16 text-center text-sm">조건에 맞는 공고가 없습니다.</p>
+      {view === 'map' ? (
+        <MapRegion
+          regions={regions}
+          nationwide={nationwide}
+          unknownCount={unknownCount}
+          loading={mapLoading}
+          error={mapError}
+          compact={compact}
+          fetchedAt={mapFetchedAt}
+          selectedCode={filters.rc || null}
+          onSelectRegion={(code) => update({ rc: code })}
+          onClearRegion={() => update({ rc: '' })}
+          onGoList={() => setView('list')}
+        />
       ) : (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {sorted.map((animal) => (
-            <AnimalCard key={animal.id} animal={animal} onSelect={setSelected} />
-          ))}
-        </div>
-      )}
+        <>
+          {/* 종료 필터에서만, 그리고 목록이 실제로 그려질 때만 요약을 보인다. */}
+          {filters.state === 'return' && !loading && totalCount > 0 && (
+            <ReturnSummary breakdown={breakdown} fetchedAt={fetchedAt} />
+          )}
 
-      {totalPages > 1 && !loading && (
-        <div className="mt-6 flex items-center justify-center gap-2 text-sm">
-          <button
-            type="button"
-            disabled={page <= 1}
-            onClick={() => goToPage(Math.max(1, page - 1))}
-            className="border-border hover:bg-accent rounded-md border px-3 py-1.5 disabled:opacity-40"
-          >
-            이전
-          </button>
-          <Badge variant="secondary">
-            {page} / {totalPages.toLocaleString()}
-          </Badge>
-          <button
-            type="button"
-            disabled={page >= totalPages}
-            onClick={() => goToPage(page + 1)}
-            className="border-border hover:bg-accent rounded-md border px-3 py-1.5 disabled:opacity-40"
-          >
-            다음
-          </button>
-        </div>
+          {loading ? (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {Array.from({ length: 12 }, (_, index) => (
+                <Skeleton key={index} className="aspect-3/4 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : sorted.length === 0 ? (
+            <p className="text-muted-foreground py-16 text-center text-sm">조건에 맞는 공고가 없습니다.</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {sorted.map((animal) => (
+                <AnimalCard key={animal.id} animal={animal} onSelect={setSelected} />
+              ))}
+            </div>
+          )}
+
+          {totalPages > 1 && !loading && (
+            <div className="mt-6 flex items-center justify-center gap-2 text-sm">
+              <button
+                type="button"
+                disabled={page <= 1}
+                onClick={() => goToPage(Math.max(1, page - 1))}
+                className="border-border hover:bg-accent rounded-md border px-3 py-1.5 disabled:opacity-40"
+              >
+                이전
+              </button>
+              <Badge variant="secondary">
+                {page} / {totalPages.toLocaleString()}
+              </Badge>
+              <button
+                type="button"
+                disabled={page >= totalPages}
+                onClick={() => goToPage(page + 1)}
+                className="border-border hover:bg-accent rounded-md border px-3 py-1.5 disabled:opacity-40"
+              >
+                다음
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {selected && <AnimalDetail animal={selected} onClose={() => setSelected(null)} />}
@@ -398,6 +548,132 @@ export function AnimalBrowser() {
           onClose={() => setSearchOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+const EMPTY_TALLY: OutcomeTally = { total: 0, waiting: {}, ended: {} };
+
+/**
+ * 지도 화면. 시군구 choropleth + 결과별 인포그래픽.
+ *
+ * 지역을 누르면 rc(=selectedCode)가 걸려 인포그래픽이 그 지역으로 좁혀지고 폴리곤이 강조된다.
+ * choropleth 자체는 rc 와 무관하게 전국 분포를 계속 보여준다 — 한 지역만 남기면 전체 그림을 잃는다.
+ */
+function MapRegion({
+  regions,
+  nationwide,
+  unknownCount,
+  loading,
+  error,
+  compact,
+  fetchedAt,
+  selectedCode,
+  onSelectRegion,
+  onClearRegion,
+  onGoList,
+}: {
+  regions: RegionAgg[];
+  nationwide: OutcomeTally | null;
+  unknownCount: number;
+  loading: boolean;
+  error: string | null;
+  compact: boolean;
+  fetchedAt: string | undefined;
+  selectedCode: string | null;
+  onSelectRegion: (code: string) => void;
+  onClearRegion: () => void;
+  onGoList: () => void;
+}) {
+  const selected = selectedCode ? (regions.find((region) => region.code === selectedCode) ?? null) : null;
+  // 선택했지만 이 필터에서 개체가 0인 지역이면 목록에 없다. 이름은 코드에서 뽑아 헤더만 보인다.
+  const selectedName = selectedCode ? (selected ? `${selected.sido} ${selected.name}` : (selectedCode.split('_')[1] ?? selectedCode)) : null;
+  const tally: OutcomeTally = selected ?? (selectedCode ? EMPTY_TALLY : (nationwide ?? EMPTY_TALLY));
+
+  return (
+    <div>
+      {error && (
+        <p className="border-destructive/40 bg-destructive/10 mb-4 rounded-lg border p-3 text-xs">{error}</p>
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
+        {/* 지도 열 */}
+        <div>
+          <div className="border-border relative h-[46svh] min-h-[320px] overflow-hidden rounded-xl border lg:h-[68svh]">
+            {loading && (
+              <div className="bg-background/60 absolute inset-0 z-10 flex items-center justify-center text-sm">
+                <span className="text-muted-foreground">지도를 불러오는 중…</span>
+              </div>
+            )}
+
+            <RegionMap
+              regions={regions}
+              selectedCode={selectedCode}
+              onSelect={(region) => onSelectRegion(region.code)}
+              compact={compact}
+            />
+
+            {/* 색 범례. 숫자가 정확한 값을 맡으므로 범례는 '적음→많음'만 담담하게. */}
+            <div className="bg-card/90 border-border pointer-events-none absolute bottom-2 left-2 rounded-lg border px-2.5 py-2 backdrop-blur">
+              <div className="text-muted-foreground mb-1 text-[10px]">시군구별 마리 수</div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-muted-foreground text-[10px]">적음</span>
+                <span
+                  className="h-2 w-16 rounded-full"
+                  style={{ background: 'linear-gradient(90deg,#1e3a8a,#2563eb,#60a5fa)' }}
+                />
+                <span className="text-muted-foreground text-[10px]">많음</span>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-muted-foreground mt-2 text-[11px]">
+            시군구를 누르면 그 지역만 자세히 볼 수 있어요.
+          </p>
+        </div>
+
+        {/* 인포그래픽 열 */}
+        <div className="space-y-3">
+          {nationwide || selected ? (
+            <RegionInfographic
+              title={selectedName ?? '전국'}
+              tally={tally}
+              fetchedAt={fetchedAt}
+              onClear={selectedCode ? onClearRegion : undefined}
+            />
+          ) : (
+            !loading && !error && (
+              <p className="text-muted-foreground py-8 text-center text-sm">집계할 개체가 없습니다.</p>
+            )
+          )}
+
+          {selectedCode && tally.total > 0 && (
+            <button
+              type="button"
+              onClick={onGoList}
+              className="bg-primary text-primary-foreground flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium"
+            >
+              {selectedName} 목록 보기
+            </button>
+          )}
+
+          {/* 시군구로 못 떨어진 개체를 숨기지 않고 밝힌다 — '결측을 결측으로'. */}
+          {unknownCount > 0 && !loading && (
+            <p className="border-border bg-card/60 text-muted-foreground flex items-start gap-2 rounded-lg border p-3 text-xs leading-relaxed">
+              <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              <span>
+                주소가 시군구로 확인되지 않은{' '}
+                <strong className="text-foreground">{unknownCount.toLocaleString()}마리</strong>는 지도에
+                포함되지 않았습니다.{' '}
+                <button type="button" onClick={onGoList} className="text-primary underline underline-offset-2">
+                  목록에서 확인
+                </button>
+                하세요.
+              </span>
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

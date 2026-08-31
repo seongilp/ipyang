@@ -1,6 +1,7 @@
 import { fetchAnimals, MAX_ROWS, type RawAnimal } from './animal-api';
 import { normalizeAnimal, type Animal } from './animal';
 import { kstToday } from './kst';
+import { resolveRegion } from './sigungu';
 
 /**
  * 전체 공고를 한 번만 받아 두고, 필터는 메모리에서 건다.
@@ -199,6 +200,13 @@ export interface AnimalFilters {
   state?: string;
   /** 자유 키워드. 품종·특징·보호소·지역을 한꺼번에 훑는다. */
   keyword?: string;
+  /**
+   * 시군구 행정구역 코드(`<시도2자리>_<시군구명>`) 정확 일치.
+   *
+   * 지도에서 시군구를 눌러 '이 지역 목록 보기'로 넘어왔을 때, 보호소 주소를 시군구로
+   * 해석해 그 지역 개체만 거른다(지도 집계와 같은 resolveRegion 을 써서 수치가 일치한다).
+   */
+  regionCode?: string;
 }
 
 /** API 의 upkind 코드 → 응답의 upKindNm. 메모리 필터링에 쓴다. */
@@ -240,6 +248,9 @@ export function filterAnimals(animals: Animal[], filters: AnimalFilters): Animal
     if (filters.species && animal.species !== filters.species) return false;
     if (filters.state && !matchesState(animal, filters.state)) return false;
     if (filters.region && !animal.shelter.org.includes(filters.region)) return false;
+    if (filters.regionCode && resolveRegion(animal.shelter.address)?.code !== filters.regionCode) {
+      return false;
+    }
 
     if (keyword) {
       // 품종·특징·보호소·지역을 한꺼번에 훑는다. 사용자가 무엇으로 찾을지 모른다.

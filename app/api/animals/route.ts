@@ -85,6 +85,8 @@ export async function GET(request: Request): Promise<NextResponse> {
       region: params.get('region') ?? undefined,
       state: state ?? undefined,
       keyword: params.get('q') ?? undefined,
+      // 지도에서 시군구를 눌러 넘어왔을 때 그 지역 개체만. 없으면 전체.
+      regionCode: params.get('rc') ?? undefined,
     });
 
     const start = (page - 1) * PAGE_SIZE;
