@@ -97,6 +97,18 @@ export function endOutcome(state: string): EndOutcome {
 }
 
 /**
+ * 죽음(자연사·안락사)으로 종료된 개체인가.
+ *
+ * 사진 회색 처리 판정에 쓴다. 회색은 '종료'가 아니라 '죽음'의 신호다 —
+ * 반환·입양처럼 잘된 결과까지 회색으로 만들면 슬픈 일처럼 보인다.
+ * 판정을 새로 짜지 않고 endOutcome 을 그대로 재사용해, 문구·배지·회색이 늘 같은
+ * 화이트리스트를 본다. 정부가 새 종료 코드를 추가해도 죽음으로 단정하지 않고 컬러로 남는다.
+ */
+export function isLoss(state: string): boolean {
+  return isEnded(state) && endOutcome(state) === 'loss';
+}
+
+/**
  * ISO 인스턴트(예: 업스트림 수집 시각 `fetchedAt`) → **KST** '8월 31일'.
  *
  * 왜 KST 로 변환하나: `fetchedAt` 은 UTC 인스턴트라 KST 자정 근처면 날짜가 하루 어긋난다.

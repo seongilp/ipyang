@@ -3,7 +3,7 @@
 import { Building2, ExternalLink, MapPin, Phone, X } from 'lucide-react';
 
 import { Separator } from '@/components/ui/separator';
-import { displayState, formatUpdatedAt, formatYmd, isEnded, type Animal } from '@/lib/animal';
+import { displayState, formatUpdatedAt, formatYmd, isLoss, type Animal } from '@/lib/animal';
 import { cn } from '@/lib/utils';
 
 /**
@@ -51,10 +51,10 @@ export function AnimalDetail({ animal, onClose }: { animal: Animal; onClose: () 
                 src={src}
                 alt={animal.breed}
                 loading="lazy"
-                // 목록과 같은 기준으로 종료된 아이의 사진은 회색 처리한다.
+                // 목록과 같은 기준 — 죽음으로 종료된 아이의 사진만 회색 처리한다.
                 className={cn(
                   'bg-muted h-56 w-auto shrink-0 rounded-lg object-cover',
-                  isEnded(animal.state) && 'grayscale brightness-105 dark:brightness-110',
+                  isLoss(animal.state) && 'grayscale brightness-105 dark:brightness-110',
                 )}
               />
             ))}

@@ -3,7 +3,7 @@
 import { Phone } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
-import { displayState, endOutcome, endOutcomeLabel, formatYmd, isEnded, type Animal } from '@/lib/animal';
+import { displayState, endOutcome, endOutcomeLabel, formatYmd, isEnded, isLoss, type Animal } from '@/lib/animal';
 import { cn } from '@/lib/utils';
 
 /*
@@ -70,6 +70,8 @@ export function AnimalCard({ animal, onSelect }: { animal: Animal; onSelect: (a:
   const ended = isEnded(animal.state);
   // 종료된 아이는 마감 배지 대신 결과 배지. 마감은 이미 지난 이야기다.
   const tone = ended ? endBadge(animal.state) : deadlineTone(animal.daysLeft);
+  // 회색은 죽음(자연사·안락사)에만. 반환·입양 등 살아 나간 결과는 컬러로 남긴다.
+  const grayscale = isLoss(animal.state);
 
   return (
     <button
@@ -95,9 +97,9 @@ export function AnimalCard({ animal, onSelect }: { animal: Animal; onSelect: (a:
             decoding="async"
             className={cn(
               'size-full object-cover transition-transform group-hover:scale-105',
-              // 종료된 아이의 사진은 회색으로. 결과가 난 아이임을 사진 자체로 알린다.
+              // 죽음으로 종료된 아이의 사진만 회색으로. 반환·입양은 잘된 일이라 컬러로 둔다.
               // 다크 테마에서 회색조가 그대로면 너무 가라앉아 brightness 를 살짝 올린다.
-              ended && 'grayscale brightness-105 dark:brightness-110',
+              grayscale && 'grayscale brightness-105 dark:brightness-110',
             )}
           />
         ) : (
