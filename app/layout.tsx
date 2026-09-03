@@ -13,9 +13,25 @@ const notoSansKr = Noto_Sans_KR({
 });
 
 export const metadata: Metadata = {
-  title: '입양 — 전국 유기동물 공고',
+  title: '입양나우 — 전국 유기동물 공고',
+  applicationName: '입양나우',
   description:
     '전국 동물보호센터의 구조동물 공고를 공고 마감이 임박한 순으로 봅니다. 국가동물보호정보시스템 공공데이터 기반.',
+  openGraph: {
+    siteName: '입양나우',
+    title: '입양나우 — 전국 유기동물 공고',
+    description:
+      '전국 동물보호센터의 구조동물 공고를 공고 마감이 임박한 순으로 봅니다. 국가동물보호정보시스템 공공데이터 기반.',
+    locale: 'ko_KR',
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary',
+    title: '입양나우 — 전국 유기동물 공고',
+    description:
+      '전국 동물보호센터의 구조동물 공고를 공고 마감이 임박한 순으로 봅니다. 국가동물보호정보시스템 공공데이터 기반.',
+  },
+  appleWebApp: { title: '입양나우' },
 };
 
 export default function RootLayout({ children }: LayoutProps<'/'>) {

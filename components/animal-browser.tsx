@@ -324,7 +324,7 @@ export function AnimalBrowser() {
       <header className="sticky top-0 z-30 -mx-4 mb-4 px-4 pt-4 pb-3 backdrop-blur">
         <div className="mb-3 flex items-center gap-2">
           <PawPrint className="text-primary size-5" aria-hidden />
-          <h1 className="text-base font-bold">입양</h1>
+          <h1 className="text-base font-bold">입양나우</h1>
           <span className="text-muted-foreground text-xs">
             {loading ? '불러오는 중…' : `${totalCount.toLocaleString()}마리`}
           </span>
